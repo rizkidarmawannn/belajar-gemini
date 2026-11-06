@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { z } from 'zod';
 import { createClient } from '../supabase/server.ts';
 import { createAdminClient } from '../supabase/admin.ts';
-import { generateText, generateJson, generateStream } from './generate.ts';
+import { generateText, generateJson, generateStream, formatFriendlyErrorMessage } from './generate.ts';
 import {
   validateAndSanitizeQuiz,
   validateAndSanitizeFlashcards,
@@ -302,7 +302,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       // Jika pemanggilan stream gagal sebelum dimulai, refund kuota reservasi
       await deps.deleteUsageLog(reservedLogId);
       return Response.json(
-        { error: streamInitErr.message || 'Gagal memulai streaming AI.' },
+        { error: formatFriendlyErrorMessage(streamInitErr) },
         { status: 500 }
       );
     }
