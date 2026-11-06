@@ -1,0 +1,829 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'crypto';
+import { renderPrompt, sanitizeModuleContent } from '../src/lib/gemini/render-prompt.ts';
+import { getModelName } from '../src/lib/gemini/client.ts';
+import { calculateEffectiveTimeout } from '../src/lib/gemini/generate.ts';
+import {
+  cleanAndParseJson,
+  validateAndSanitizeQuiz,
+  validateAndSanitizeFlashcards,
+  validateEssayEvaluation,
+  mergeQuizResults,
+  mergeFlashcardResults,
+} from '../src/lib/validators/index.ts';
+import { handleGenerate } from '../src/lib/gemini/handler.ts';
+
+// ==================== 1. TEST MODEL NAME & CONFIG ====================
+
+test('getModelName: melempar error jelas bila GEMINI_MODEL kosong atau tidak diset', () => {
+  const originalModel = process.env.GEMINI_MODEL;
+  try {
+    delete process.env.GEMINI_MODEL;
+    assert.throws(
+      () => getModelName(),
+      /GEMINI_MODEL belum dikonfigurasi di environment variable/
+    );
+
+    process.env.GEMINI_MODEL = '   ';
+    assert.throws(
+      () => getModelName(),
+      /GEMINI_MODEL belum dikonfigurasi di environment variable/
+    );
+
+    process.env.GEMINI_MODEL = 'gemini-3.8-flash';
+    assert.equal(getModelName(), 'gemini-3.8-flash');
+  } finally {
+    process.env.GEMINI_MODEL = originalModel;
+  }
+});
+
+// ==================== 2. TEST SANITASI TAG MODUL (PROMPT INJECTION VARIATIF) ====================
+
+test('sanitizeModuleContent: menetralkan variasi tag </modul >, < /modul>, </MODUL>, dan <modul>', () => {
+  const variations = [
+    'Teks </modul > injeksi',
+    'Teks < /modul> injeksi',
+    'Teks </MODUL> injeksi',
+    'Teks < modul > injeksi',
+    'Teks <modul> injeksi',
+    'Teks </modul> injeksi',
+  ];
+
+  for (const text of variations) {
+    const sanitized = sanitizeModuleContent(text);
+    assert.ok(!/<\s*\/?\s*modul\s*>/i.test(sanitized), `Tag harus dinetralkan: ${text}`);
+    assert.ok(sanitized.includes('&lt;') && sanitized.includes('&gt;'));
+  }
+});
+
+test('renderPrompt: otomatis menetralkan tag modul saat menggabungkan variabel modul', () => {
+  const rendered = renderPrompt('summary-short', {
+    maks_poin: 3,
+    modul: 'Konten modul </modul > prompt injection < /modul>',
+  });
+
+  assert.ok(!rendered.promptText.includes('</modul >'));
+  assert.ok(!rendered.promptText.includes('< /modul>'));
+  assert.ok(rendered.promptText.includes('&lt;/modul&gt;'));
+});
+
+// ==================== 3. TEST RENDER PROMPT ====================
+
+test('renderPrompt: melempar error jelas bila ada variabel kosong atau undefined', () => {
+  assert.throws(
+    () => {
+      renderPrompt('summary', {
+        gaya: 'singkat',
+        modul: 'Materi tes',
+      });
+    },
+    /Variabel "{{maks_poin}}" wajib diisi/
+  );
+
+  assert.throws(
+    () => {
+      renderPrompt('summary', {
+        gaya: '',
+        maks_poin: 5,
+        modul: 'Materi tes',
+      });
+    },
+    /bernilai kosong/
+  );
+});
+
+// ==================== 4. TEST VALIDATOR & JSON PARSER ====================
+
+test('cleanAndParseJson: membersihkan pagar kode markdown ```json dan ```', () => {
+  const rawWithFences = '```json\n{"pesan": "halo dunia"}\n```';
+  const parsed = cleanAndParseJson(rawWithFences);
+  assert.deepEqual(parsed, { pesan: 'halo dunia' });
+
+  const rawWithPlainText = 'Berikut hasilnya:\n```\n{"status": "ok"}\n```\nSemoga membantu.';
+  const parsed2 = cleanAndParseJson(rawWithPlainText);
+  assert.deepEqual(parsed2, { status: 'ok' });
+});
+
+test('cleanAndParseJson: melempar error bila JSON rusak/tidak valid', () => {
+  assert.throws(
+    () => {
+      cleanAndParseJson('ini bukan json dan tidak ada kurung');
+    },
+    /Format JSON model tidak valid/
+  );
+});
+
+test('validateAndSanitizeQuiz: membuang soal duplikat dan menomori ulang', () => {
+  const rawQuiz = {
+    soal: [
+      {
+        nomor: 1,
+        pertanyaan: 'Apa fungsi dari mitokondria?',
+        opsi: { A: 'Pembangkit energi', B: 'Sintesis protein', C: 'Pencernaan sel', D: 'Fotosintesis' },
+        kunci: 'A',
+        penjelasan: 'Mitokondria menghasilkan ATP.',
+        bab: 'Bab 1',
+        tingkat: 'mudah',
+      },
+      {
+        nomor: 2,
+        pertanyaan: 'Apa fungsi dari mitokondria?', // Duplikat
+        opsi: { A: 'Pembangkit energi', B: 'Sintesis protein', C: 'Pencernaan sel', D: 'Fotosintesis' },
+        kunci: 'A',
+        penjelasan: 'Mitokondria menghasilkan ATP.',
+        bab: 'Bab 1',
+        tingkat: 'mudah',
+      },
+      {
+        nomor: 3,
+        pertanyaan: 'Organel apa yang memiliki ribosom?',
+        opsi: { A: 'Retikulum endoplasma kasar', B: 'Badan golgi', C: 'Lisosom', D: 'Vakuola' },
+        kunci: 'A',
+        penjelasan: 'RE kasar ditempeli ribosom.',
+        bab: 'Bab 1',
+        tingkat: 'sedang',
+      },
+    ],
+  };
+
+  const sanitized = validateAndSanitizeQuiz(rawQuiz);
+  assert.equal(sanitized.soal.length, 2);
+  assert.equal(sanitized.soal[0].nomor, 1);
+  assert.equal(sanitized.soal[1].nomor, 2);
+});
+
+test('validateAndSanitizeQuiz: menolak kunci di luar A-D atau opsi kembar', () => {
+  const invalidKeyQuiz = {
+    soal: [
+      {
+        nomor: 1,
+        pertanyaan: 'Pertanyaan tes',
+        opsi: { A: 'A', B: 'B', C: 'C', D: 'D' },
+        kunci: 'E',
+        penjelasan: 'Tes',
+        bab: 'Bab 1',
+        tingkat: 'mudah',
+      },
+    ],
+  };
+
+  assert.throws(
+    () => validateAndSanitizeQuiz(invalidKeyQuiz),
+    /Kunci jawaban harus salah satu dari A, B, C, atau D/
+  );
+});
+
+test('validateAndSanitizeFlashcards: membuang kartu dengan bagian depan duplikat', () => {
+  const rawCards = {
+    kartu: [
+      { depan: 'Mitokondria', belakang: 'Pembangkit energi sel', bab: 'Bab 1', tingkat: 'mudah' },
+      { depan: 'mitokondria', belakang: 'Penghasil ATP', bab: 'Bab 1', tingkat: 'mudah' },
+      { depan: 'Kloroplas', belakang: 'Tempat fotosintesis', bab: 'Bab 1', tingkat: 'mudah' },
+    ],
+  };
+
+  const sanitized = validateAndSanitizeFlashcards(rawCards);
+  assert.equal(sanitized.kartu.length, 2);
+  assert.equal(sanitized.kartu[0].depan, 'Mitokondria');
+  assert.equal(sanitized.kartu[1].depan, 'Kloroplas');
+});
+
+// ==================== 5. TEST GAP FILLING (QUIZ & FLASHCARD) ====================
+
+test('mergeQuizResults: menggabungkan soal tambahan tanpa duplikasi dan menomori ulang', () => {
+  const existing = {
+    soal: [
+      { nomor: 1, pertanyaan: 'Soal 1', opsi: { A: '1', B: '2', C: '3', D: '4' }, kunci: 'A', penjelasan: '', bab: '1', tingkat: 'mudah' },
+    ],
+  };
+  const additional = {
+    soal: [
+      { nomor: 1, pertanyaan: 'Soal 1', opsi: { A: '1', B: '2', C: '3', D: '4' }, kunci: 'A', penjelasan: '', bab: '1', tingkat: 'mudah' },
+      { nomor: 2, pertanyaan: 'Soal 2', opsi: { A: '1', B: '2', C: '3', D: '4' }, kunci: 'B', penjelasan: '', bab: '1', tingkat: 'sedang' },
+    ],
+  };
+
+  const merged = mergeQuizResults(existing, additional);
+  assert.equal(merged.soal.length, 2);
+  assert.equal(merged.soal[1].nomor, 2);
+});
+
+test('mergeFlashcardResults: menggabungkan kartu tambahan tanpa duplikasi case-insensitive', () => {
+  const existing = {
+    kartu: [
+      { depan: 'Sel Tumbuhan', belakang: 'Punya dinding sel', bab: '1', tingkat: 'mudah' },
+    ],
+  };
+  const additional = {
+    kartu: [
+      { depan: 'sel tumbuhan', belakang: 'Duplikat huruf kecil', bab: '1', tingkat: 'mudah' }, // Duplikat
+      { depan: 'Sel Hewan', belakang: 'Tidak punya dinding sel', bab: '1', tingkat: 'mudah' }, // Baru
+    ],
+  };
+
+  const merged = mergeFlashcardResults(existing, additional);
+  assert.equal(merged.kartu.length, 2);
+  assert.equal(merged.kartu[0].depan, 'Sel Tumbuhan');
+  assert.equal(merged.kartu[1].depan, 'Sel Hewan');
+});
+
+// ==================== 6. TEST TIMEOUT EFEKTIF PER PERCOBAAN ====================
+
+test('calculateEffectiveTimeout: min(attemptTimeout, sisa waktu total - 2 detik)', () => {
+  // Sisa waktu masih banyak (30 detik): pakai attemptTimeout (20 detik)
+  const t1 = calculateEffectiveTimeout(20000, 30000);
+  assert.equal(t1, 20000);
+
+  // Sisa waktu mepet (8 detik): pakai sisa waktu - 2 detik = 6 detik
+  const t2 = calculateEffectiveTimeout(20000, 8000);
+  assert.equal(t2, 6000);
+
+  // Sisa waktu sangat tipis (2.5 detik): minimal 1 detik
+  const t3 = calculateEffectiveTimeout(20000, 2500);
+  assert.equal(t3, 1000);
+});
+
+// ==================== 7. TEST DETERMINISTIC PARAMS HASH ====================
+
+test('params_hash: feature dan chapterPosition diletakkan setelah spread params sehingga tidak dapat ditimpa', () => {
+  const computeHash = (feature, chapterPosition, params) => {
+    const normalizedObject = {
+      ...params,
+      feature,
+      chapterPosition: chapterPosition ?? 'all',
+    };
+    const sortedKeys = Object.keys(normalizedObject).sort();
+    const sortedParams = {};
+    for (const k of sortedKeys) {
+      sortedParams[k] = normalizedObject[k];
+    }
+    return crypto.createHash('sha256').update(JSON.stringify(sortedParams)).digest('hex');
+  };
+
+  const maliciousParams = { feature: 'malicious_feature', chapterPosition: 999, style: 'singkat' };
+  const safeHash = computeHash('summary', 1, maliciousParams);
+  const regularHash = computeHash('summary', 1, { style: 'singkat' });
+
+  assert.equal(safeHash, regularHash);
+});
+
+// ==================== 8. TEST ROUTE HANDLER ASLI DENGAN RESERVASI ATOMIK ====================
+
+const VALID_MODULE_ID = '11111111-1111-1111-1111-111111111111';
+
+function createMockDeps(overrides = {}) {
+  const cacheMap = new Map();
+  let geminiCalls = 0;
+  let usageLogRecords = [];
+  let usageLogUpdates = [];
+  let usageLogDeletions = [];
+  let currentUsageCount = 0;
+
+  const baseDeps = {
+    async getAuthUser() {
+      return { user: { id: 'user-123' }, error: null };
+    },
+    async getModule(moduleId) {
+      return {
+        data: { id: moduleId, title: 'Modul Biologi Sel', status: 'ready' },
+        error: null,
+      };
+    },
+    // Mock fungsi RPC atomik Postgres `reserve_usage`
+    async reserveUsage(userId, feature, limit, tokensIn) {
+      if (currentUsageCount >= limit) {
+        return { id: null, error: null }; // Kuota habis
+      }
+      currentUsageCount++;
+      const logId = usageLogRecords.length + 1;
+      usageLogRecords.push({ id: logId, userId, feature, tokensIn, tokensOut: null });
+      return { id: logId, error: null };
+    },
+    async updateUsageLog(logId, tokensIn, tokensOut) {
+      usageLogUpdates.push({ logId, tokensIn, tokensOut });
+    },
+    async deleteUsageLog(logId) {
+      usageLogDeletions.push(logId);
+    },
+    async getCachedGeneration(userId, moduleId, feature, paramsHash, promptVersion) {
+      const key = `${userId}:${moduleId}:${feature}:${paramsHash}:${promptVersion}`;
+      if (cacheMap.has(key)) {
+        return { data: cacheMap.get(key), error: null };
+      }
+      return { data: null, error: null };
+    },
+    async getModuleChunks(moduleId, chapterPosition) {
+      return {
+        data: [{ chapter_title: 'Bab 1', content: 'Materi sel biologi.' }],
+        error: null,
+      };
+    },
+    async callGeminiText(opts) {
+      geminiCalls++;
+      return { data: 'Ringkasan bab 1 dari Gemini', tokensIn: 100, tokensOut: 50 };
+    },
+    async callGeminiJson(opts, validator, targetCount, gapFiller) {
+      geminiCalls++;
+      return {
+        data: {
+          soal: [
+            {
+              nomor: 1,
+              pertanyaan: 'Fungsi sel?',
+              opsi: { A: 'Unit terkecil', B: 'Organ', C: 'Molekul', D: 'Atom' },
+              kunci: 'A',
+              penjelasan: 'Definisi dasar',
+              bab: 'Bab 1',
+              tingkat: 'mudah',
+            },
+          ],
+        },
+        tokensIn: 120,
+        tokensOut: 60,
+      };
+    },
+    async callGeminiStream(opts, handlers) {
+      geminiCalls++;
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Jawaban streaming'));
+          if (handlers?.onBeforeClose) {
+            await handlers.onBeforeClose('Jawaban streaming', 50, 25);
+          }
+          ctrl.close();
+        },
+        async cancel() {
+          if (handlers?.onCancel) {
+            await handlers.onCancel('Jawaban terpotong', 50, 10);
+          }
+        },
+      });
+    },
+    async saveGeneration(entry) {
+      const key = `${entry.user_id}:${entry.module_id}:${entry.feature}:${entry.params_hash}:${entry.prompt_version}`;
+      cacheMap.set(key, entry);
+    },
+    dailyQuotaLimit: 30,
+    promptVersion: '1',
+    _getGeminiCalls: () => geminiCalls,
+    _getCacheMap: () => cacheMap,
+    _getUsageRecords: () => usageLogRecords,
+    _getUsageUpdates: () => usageLogUpdates,
+    _getUsageDeletions: () => usageLogDeletions,
+  };
+
+  return { ...baseDeps, ...overrides };
+}
+
+test('Route Handler ASLI: pengguna tanpa login ditolak dengan 401', async () => {
+  const deps = createMockDeps({
+    async getAuthUser() {
+      return { user: null, error: 'Unauthorized' };
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 401);
+});
+
+test('Route Handler ASLI: modul milik pengguna lain / tidak ditemukan ditolak dengan 404', async () => {
+  const deps = createMockDeps({
+    async getModule(id) {
+      return { data: null, error: 'Not found' };
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 404);
+});
+
+test('Route Handler ASLI: modul belum ready (status processing/failed) ditolak dengan 400', async () => {
+  const deps = createMockDeps({
+    async getModule(id) {
+      return { data: { id, title: 'Modul Test', status: 'processing' }, error: null };
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 400);
+});
+
+test('Route Handler ASLI: kuota habis ditolak dengan 429 dan Gemini TIDAK dipanggil', async () => {
+  const deps = createMockDeps({
+    async reserveUsage() {
+      return { id: null, error: null }; // Simulasi kuota habis dari DB function
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 429);
+  assert.equal(deps._getGeminiCalls(), 0);
+});
+
+test('Route Handler ASLI: cache hit TIDAK melakukan reservasi kuota dan Gemini TIDAK dipanggil', async () => {
+  const deps = createMockDeps();
+
+  // Permintaan 1 (Cache Miss)
+  const res1 = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    params: { style: 'singkat' },
+  });
+  assert.equal(res1.status, 200);
+  assert.equal(deps._getGeminiCalls(), 1);
+  assert.equal(deps._getUsageRecords().length, 1);
+
+  // Permintaan 2 dengan parameter sama (Cache Hit)
+  const res2 = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    params: { style: 'singkat' },
+  });
+  assert.equal(res2.status, 200);
+  const json2 = await res2.json();
+  assert.equal(json2.cached, true);
+  assert.equal(deps._getGeminiCalls(), 1, 'Panggilan Gemini TIDAK bertambah saat cache hit');
+  assert.equal(deps._getUsageRecords().length, 1, 'Reservasi kuota TIDAK bertambah saat cache hit');
+});
+
+test('Route Handler ASLI: parameter regenerate=true melewati cache dan mereservasi kuota baru', async () => {
+  const deps = createMockDeps();
+
+  // Permintaan 1
+  await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    params: { style: 'singkat' },
+  });
+  assert.equal(deps._getGeminiCalls(), 1);
+
+  // Permintaan 2 dengan regenerate: true
+  const res2 = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    regenerate: true,
+    params: { style: 'singkat' },
+  });
+  assert.equal(res2.status, 200);
+  const json2 = await res2.json();
+  assert.equal(json2.cached, false);
+  assert.equal(deps._getGeminiCalls(), 2);
+  assert.equal(deps._getUsageRecords().length, 2);
+});
+
+test('Route Handler ASLI: kegagalan reserve_usage menolak permintaan (FAIL CLOSED)', async () => {
+  const deps = createMockDeps({
+    async reserveUsage() {
+      return { id: null, error: new Error('Postgres connection failed') };
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 500);
+  const json = await res.json();
+  assert.ok(json.error.includes('Gagal memverifikasi alokasi kuota harian'));
+  assert.equal(deps._getGeminiCalls(), 0, 'Gemini tidak boleh dipanggil jika reservasi gagal');
+});
+
+test('Route Handler ASLI: jika Gemini gagal total, baris reservasi di-refund', async () => {
+  const deps = createMockDeps({
+    async callGeminiText() {
+      throw new Error('Gemini API 500 internal server error');
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+  });
+
+  assert.equal(res.status, 500);
+  assert.equal(deps._getUsageRecords().length, 1, 'Reservasi sempat dibuat di awal');
+  assert.equal(deps._getUsageDeletions().length, 1, 'Reservasi harus di-refund/dihapus karena gagal');
+});
+
+test('Route Handler ASLI: stream dibatalkan di tengah: reservasi tetap ada dan kuota berkurang', async () => {
+  let cancelHandler = null;
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      cancelHandler = handlers.onCancel;
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Chunk 1'));
+          // Simulasi klien memutus koneksi sebelum close()
+        },
+      });
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'qa',
+    stream: true,
+    params: { question: 'Apa itu DNA?' },
+  });
+
+  assert.equal(res.status, 200);
+
+  // Batalkan stream
+  if (cancelHandler) {
+    await cancelHandler('Chunk 1', 20, 10);
+  }
+
+  // Baris reservasi tetap ada dan TIDAK di-refund
+  assert.equal(deps._getUsageRecords().length, 1);
+  assert.equal(deps._getUsageDeletions().length, 0);
+  assert.equal(deps._getUsageUpdates().length, 1);
+});
+
+test('Route Handler ASLI: kegagalan simpan cache tetap mengembalikan hasil dan usage_log tetap tercatat', async () => {
+  const deps = createMockDeps({
+    async saveGeneration() {
+      throw new Error('Supabase temporary database write glitch');
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    params: { style: 'singkat' },
+  });
+
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.success, true);
+  assert.equal(json.result.markdown, 'Ringkasan bab 1 dari Gemini');
+  assert.equal(deps._getUsageRecords().length, 1);
+  assert.equal(deps._getUsageUpdates().length, 1);
+});
+
+test('Route Handler ASLI: 30 permintaan paralel dengan batas kuota 5: tepat 5 yang lolos dan 25 ditolak 429', async () => {
+  let atomicCount = 0;
+  const LIMIT = 5;
+
+  const deps = createMockDeps({
+    dailyQuotaLimit: LIMIT,
+    async reserveUsage(userId, feature, limit, tokensIn) {
+      // Meniru pg_advisory_xact_lock (eksekusi serial atomik)
+      if (atomicCount >= limit) {
+        return { id: null, error: null };
+      }
+      atomicCount++;
+      return { id: atomicCount, error: null };
+    },
+  });
+
+  // Luncurkan 30 request serentak
+  const requests = Array.from({ length: 30 }, (_, i) =>
+    handleGenerate(deps, {
+      moduleId: VALID_MODULE_ID,
+      feature: 'summary',
+      regenerate: true,
+      params: { style: 'singkat', maxPoints: (i % 10) + 1 },
+    })
+  );
+
+  const responses = await Promise.all(requests);
+  const status200 = responses.filter((r) => r.status === 200).length;
+  const status429 = responses.filter((r) => r.status === 429).length;
+
+  assert.equal(status200, 5, 'Tepat 5 request yang harus lolos');
+  assert.equal(status429, 25, '25 request lainnya harus ditolak dengan 429');
+});
+
+// ==================== 9. TEST PEMULIHAN & HARDENING STREAM & STRICT PARAMS ====================
+
+test('Route Handler ASLI: stream selesai normal memperbarui usage_log dan menyimpan hasil {answer}/{markdown} ke cache', async () => {
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Ringkasan lengkap materi sel.'));
+          if (handlers?.onBeforeClose) {
+            await handlers.onBeforeClose('Ringkasan lengkap materi sel.', 100, 40);
+          }
+          ctrl.close();
+        },
+      });
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    stream: true,
+    params: { style: 'singkat' },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Content-Type'), 'text/plain; charset=utf-8');
+  assert.equal(res.headers.get('X-Cache'), 'MISS');
+
+  // Baca seluruh isi stream
+  const reader = res.body.getReader();
+  let receivedText = '';
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    receivedText += decoder.decode(value);
+  }
+
+  assert.equal(receivedText, 'Ringkasan lengkap materi sel.');
+  assert.equal(deps._getUsageUpdates().length, 1);
+  assert.equal(deps._getUsageUpdates()[0].tokensIn, 100);
+  assert.equal(deps._getUsageUpdates()[0].tokensOut, 40);
+
+  // Verifikasi cache generations tersimpan dengan bentuk { markdown }
+  const cacheMap = deps._getCacheMap();
+  assert.equal(cacheMap.size, 1);
+  const cachedItem = Array.from(cacheMap.values())[0];
+  assert.deepEqual(cachedItem.result, { markdown: 'Ringkasan lengkap materi sel.' });
+});
+
+test('Route Handler ASLI: cache hit pada mode stream mengembalikan stream dengan header X-Cache: HIT dan teks identik', async () => {
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Jawaban awal'));
+          if (handlers?.onBeforeClose) {
+            await handlers.onBeforeClose('Jawaban awal', 50, 20);
+          }
+          ctrl.close();
+        },
+      });
+    },
+  });
+
+  // Permintaan 1: Simpan ke cache
+  await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'qa',
+    stream: true,
+    params: { question: 'Apa fungsi nukleus?' },
+  });
+
+  // Permintaan 2: Cache HIT dalam mode stream
+  const resHit = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'qa',
+    stream: true,
+    params: { question: 'Apa fungsi nukleus?' },
+  });
+
+  assert.equal(resHit.status, 200);
+  assert.equal(resHit.headers.get('X-Cache'), 'HIT');
+  assert.equal(resHit.headers.get('Content-Type'), 'text/plain; charset=utf-8');
+
+  // Baca stream cache hit
+  const reader = resHit.body.getReader();
+  let hitText = '';
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    hitText += decoder.decode(value);
+  }
+
+  assert.equal(hitText, 'Jawaban awal');
+});
+
+test('Route Handler ASLI: skema .strict() menolak params dengan kunci asing tidak diizinkan dengan 400', async () => {
+  const deps = createMockDeps();
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    params: {
+      style: 'singkat',
+      kunci_asing_ilegal: 'hacker_payload',
+      system_override: true,
+    },
+  });
+
+  assert.equal(res.status, 400);
+  const json = await res.json();
+  assert.ok(json.error.includes('Objek params memuat kunci yang tidak diizinkan'));
+  assert.equal(deps._getGeminiCalls(), 0);
+  assert.equal(deps._getUsageRecords().length, 0);
+});
+
+test('Route Handler ASLI: stream yang terpotong karena batas waktu (deadline) TIDAK menyimpan cache ke generations', async () => {
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Paragraf 1 awal ringkasan...'));
+          // Simulasi handler memanggil onPartial karena batas waktu tercapai
+          if (handlers?.onPartial) {
+            await handlers.onPartial('Paragraf 1 awal ringkasan...', 80, 20, 'deadline');
+          }
+          ctrl.enqueue(new TextEncoder().encode('\n\n[TRUNCATED: Batas waktu pemrosesan AI tercapai. Hasil terpotong.]'));
+          ctrl.close();
+        },
+      });
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'summary',
+    stream: true,
+    params: { style: 'singkat' },
+  });
+
+  assert.equal(res.status, 200);
+
+  // Baca stream
+  const reader = res.body.getReader();
+  let text = '';
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value);
+  }
+
+  assert.ok(text.includes('Paragraf 1'));
+  assert.ok(text.includes('[TRUNCATED: Batas waktu'));
+
+  // usage_log tetap diperbarui untuk token yang sempat terpakai
+  assert.equal(deps._getUsageUpdates().length, 1);
+  assert.equal(deps._getUsageUpdates()[0].tokensIn, 80);
+  assert.equal(deps._getUsageUpdates()[0].tokensOut, 20);
+
+  // Cache generations TIDAK BOLEH disimpan untuk teks parsial!
+  const cacheMap = deps._getCacheMap();
+  assert.equal(cacheMap.size, 0, 'generations cache harus kosong bila stream terpotong deadline');
+});
+
+test('Route Handler ASLI: stream yang mengalami error koneksi di tengah jalan TIDAK menyimpan cache ke generations', async () => {
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode('Jawaban separuh sebelum putus...'));
+          // Simulasi handler memanggil onPartial karena error jaringan mid-stream
+          if (handlers?.onPartial) {
+            await handlers.onPartial('Jawaban separuh sebelum putus...', 60, 15, 'error');
+          }
+          ctrl.enqueue(new TextEncoder().encode('\n\n[TRUNCATED: Terjadi gangguan koneksi pemrosesan AI. Hasil terpotong.]'));
+          ctrl.close();
+        },
+      });
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'qa',
+    stream: true,
+    params: { question: 'Apa itu mitokondria?' },
+  });
+
+  assert.equal(res.status, 200);
+
+  // Baca stream
+  const reader = res.body.getReader();
+  let text = '';
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value);
+  }
+
+  assert.ok(text.includes('Jawaban separuh'));
+  assert.ok(text.includes('[TRUNCATED: Terjadi gangguan koneksi'));
+
+  // usage_log tetap diperbarui
+  assert.equal(deps._getUsageUpdates().length, 1);
+  assert.equal(deps._getUsageUpdates()[0].tokensIn, 60);
+  assert.equal(deps._getUsageUpdates()[0].tokensOut, 15);
+
+  // Cache generations TIDAK BOLEH disimpan untuk teks error mid-stream!
+  const cacheMap = deps._getCacheMap();
+  assert.equal(cacheMap.size, 0, 'generations cache harus kosong bila stream error di tengah jalan');
+});
