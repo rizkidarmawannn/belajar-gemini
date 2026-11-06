@@ -138,7 +138,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
 
     if (cachedGen) {
       // Jika mode stream diminta dan cache hit, kembalikan juga sebagai stream teks dengan header X-Cache: HIT
-      if (body.stream && (body.feature === 'qa' || body.feature === 'summary')) {
+      if (body.stream && (body.feature === 'qa' || body.feature === 'summary' || body.feature === 'summary_short')) {
         const textContent =
           body.feature === 'qa'
             ? (cachedGen.result as any)?.answer || ''
@@ -227,10 +227,12 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
   }
 
   // 7. Mode Streaming untuk QA dan Ringkasan
-  if (body.stream && (body.feature === 'qa' || body.feature === 'summary')) {
+  if (body.stream && (body.feature === 'qa' || body.feature === 'summary' || body.feature === 'summary_short')) {
     const streamVariables =
       body.feature === 'qa'
         ? { pertanyaan: body.params.question || '', modul: moduleContent }
+        : body.feature === 'summary_short'
+        ? { maks_poin: body.params.maxPoints, modul: moduleContent }
         : {
             gaya: body.params.style,
             maks_poin: body.params.maxPoints,
