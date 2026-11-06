@@ -42,5 +42,27 @@ export default async function ModulePage({
     notFound();
   }
 
-  return <ModuleViewer module={moduleData} chunks={chunks} />;
+  // Ambil flashcards milik user untuk modul ini
+  const { data: initialFlashcards } = await supabase
+    .from('flashcards')
+    .select('*')
+    .eq('module_id', id)
+    .order('created_at', { ascending: false });
+
+  // Ambil riwayat percobaan kuis
+  const { data: initialQuizAttempts } = await supabase
+    .from('quiz_attempts')
+    .select('*')
+    .eq('module_id', id)
+    .order('created_at', { ascending: false })
+    .limit(10);
+
+  return (
+    <ModuleViewer
+      module={moduleData}
+      chunks={chunks}
+      initialFlashcards={initialFlashcards || []}
+      initialQuizAttempts={initialQuizAttempts || []}
+    />
+  );
 }
