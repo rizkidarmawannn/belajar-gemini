@@ -414,10 +414,18 @@ export default function ModuleViewer({ module, chunks }: ModuleViewerProps) {
               </div>
 
               <div className="prose prose-slate dark:prose-invert max-w-none text-sm leading-relaxed">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-                  {summaryText}
-                </ReactMarkdown>
-                {isSummarizing && (
+                {isSummarizing && !summaryText && (
+                  <div className="flex items-center gap-3 py-4 text-slate-500 dark:text-slate-400 text-sm animate-pulse">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                    <span>Gemini AI sedang membaca materi dan mulai mengetik ringkasan...</span>
+                  </div>
+                )}
+                {summaryText && (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+                    {summaryText}
+                  </ReactMarkdown>
+                )}
+                {isSummarizing && summaryText && (
                   <span className="inline-block w-2 h-4 bg-indigo-600 animate-pulse ml-1 align-middle" />
                 )}
               </div>
@@ -476,8 +484,14 @@ export default function ModuleViewer({ module, chunks }: ModuleViewerProps) {
                 Jawaban AI
               </span>
               <div className="prose prose-slate dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap">
+                {isAsking && !qaAnswer && (
+                  <div className="flex items-center gap-3 py-4 text-slate-500 dark:text-slate-400 text-sm animate-pulse">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                    <span>Gemini AI sedang membaca isi modul dan merumuskan jawaban...</span>
+                  </div>
+                )}
                 {qaAnswer}
-                {isAsking && (
+                {isAsking && qaAnswer && (
                   <span className="inline-block w-2 h-4 bg-indigo-600 animate-pulse ml-1 align-middle" />
                 )}
               </div>

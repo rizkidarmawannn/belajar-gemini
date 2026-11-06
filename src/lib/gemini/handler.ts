@@ -157,6 +157,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             'Content-Type': 'text/plain; charset=utf-8',
             'X-Cache': 'HIT',
             'Cache-Control': 'no-cache, no-transform',
+            'X-Accel-Buffering': 'no',
           },
         });
       }
@@ -296,6 +297,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           'Content-Type': 'text/plain; charset=utf-8',
           'X-Cache': 'MISS',
           'Cache-Control': 'no-cache, no-transform',
+          'X-Accel-Buffering': 'no',
         },
       });
     } catch (streamInitErr: any) {
