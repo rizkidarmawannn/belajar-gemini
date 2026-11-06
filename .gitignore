@@ -34,3 +34,4 @@ Thumbs.db
 # Storage local temp
 storage/
 temp/
+supabase/.temp/
