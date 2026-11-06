@@ -25,11 +25,18 @@ export function renderPrompt(name: string, variables: Record<string, any>): Rend
   const systemInstruction = fs.readFileSync(systemPath, 'utf-8').trim();
 
   // 2. Baca file template yang diminta
+  const normalizedName = name.replace(/_/g, '-');
   const fileName = name.endsWith('.md') ? name : `${name}.md`;
-  const templatePath = path.join(promptsDir, fileName);
+  let templatePath = path.join(promptsDir, fileName);
 
   if (!fs.existsSync(templatePath)) {
-    throw new Error(`Template prompt "${fileName}" tidak ditemukan di folder prompts/.`);
+    const altFileName = normalizedName.endsWith('.md') ? normalizedName : `${normalizedName}.md`;
+    const altPath = path.join(promptsDir, altFileName);
+    if (fs.existsSync(altPath)) {
+      templatePath = altPath;
+    } else {
+      throw new Error(`Template prompt "${fileName}" tidak ditemukan di folder prompts/.`);
+    }
   }
 
   let promptText = fs.readFileSync(templatePath, 'utf-8');
