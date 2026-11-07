@@ -58,16 +58,16 @@ Salin dari `.env.example` dan sesuaikan nilainya:
 # SUPABASE CONFIGURATION
 # -----------------------------------------------------------------------------
 NEXT_PUBLIC_SUPABASE_URL=https://proyek-anda.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=masukkan_anon_key_supabase_anda
 
 # KUNCI RAHASIA SERVER (JANGAN PERNAH DIKOMIT ATAU DITAMPILKAN DI CLIENT!)
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
+SUPABASE_SERVICE_ROLE_KEY=masukkan_service_role_key_supabase_anda
 
 # -----------------------------------------------------------------------------
 # GOOGLE GEMINI API CONFIGURATION
 # -----------------------------------------------------------------------------
 # Dapatkan dari Google AI Studio (https://aistudio.google.com/)
-GEMINI_API_KEY=AIzaSy...
+GEMINI_API_KEY=masukkan_api_key_gemini_anda
 
 # Nama model yang digunakan untuk inferensi
 GEMINI_MODEL=gemini-2.5-flash
