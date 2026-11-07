@@ -245,31 +245,31 @@ test('Route Handler ASLI: 10 permintaan paralel dengan limit 0 dan regenerate: t
 
 // ==================== 5. TEST WHITELIST DEV UNLIMITED (DEV_EMAILS) ====================
 
-test('isDevUnlimitedUser: mencocokkan email cyevertye@gmail.com dan prefix cyeverty secara case-insensitive', () => {
-  const devEnv = 'cyevertye@gmail.com,cyeverty,admin@test.com';
+test('isDevUnlimitedUser: mencocokkan email mock dev dan prefix secara case-insensitive', () => {
+  const devEnv = 'mock-dev@example.com,mockdev,admin@test.com';
 
   // 1. Email persis
-  assert.equal(isDevUnlimitedUser({ email: 'cyevertye@gmail.com' }, devEnv), true);
-  assert.equal(isDevUnlimitedUser({ email: 'CYEVERTYE@GMAIL.COM' }, devEnv), true);
+  assert.equal(isDevUnlimitedUser({ email: 'mock-dev@example.com' }, devEnv), true);
+  assert.equal(isDevUnlimitedUser({ email: 'MOCK-DEV@EXAMPLE.COM' }, devEnv), true);
 
-  // 2. Prefix username cyeverty
-  assert.equal(isDevUnlimitedUser({ email: 'cyeverty@example.com' }, devEnv), true);
+  // 2. Prefix username mockdev
+  assert.equal(isDevUnlimitedUser({ email: 'mockdev@anotherexample.com' }, devEnv), true);
 
   // 3. User metadata username
-  assert.equal(isDevUnlimitedUser({ user_metadata: { username: 'cyeverty' } }, devEnv), true);
+  assert.equal(isDevUnlimitedUser({ user_metadata: { username: 'mockdev' } }, devEnv), true);
 
   // 4. Pengguna umum bukan dev -> false
   assert.equal(isDevUnlimitedUser({ email: 'siswa.biasa@sekolah.id' }, devEnv), false);
   assert.equal(isDevUnlimitedUser(null, devEnv), false);
   assert.equal(isDevUnlimitedUser(undefined, devEnv), false);
-  assert.equal(isDevUnlimitedUser({ email: 'cyevertye@gmail.com' }, ''), false);
+  assert.equal(isDevUnlimitedUser({ email: 'mock-dev@example.com' }, ''), false);
 });
 
-test('getUserDailyQuotaLimit: mengembalikan 0 untuk akun dev cyeverty, dan 30 untuk pengguna umum', () => {
-  const devEnv = 'cyevertye@gmail.com';
+test('getUserDailyQuotaLimit: mengembalikan 0 untuk akun dev, dan 30 untuk pengguna umum', () => {
+  const devEnv = 'mock-dev@example.com';
   const defaultEnv = '30';
 
-  const devUser = { email: 'cyevertye@gmail.com' };
+  const devUser = { email: 'mock-dev@example.com' };
   const normalUser = { email: 'user.biasa@domain.com' };
 
   assert.equal(getUserDailyQuotaLimit(devUser, devEnv, defaultEnv), 0, 'Akun dev harus mendapat limit 0 (unlimited)');
@@ -278,10 +278,10 @@ test('getUserDailyQuotaLimit: mengembalikan 0 untuk akun dev cyeverty, dan 30 un
 });
 
 test('handleGenerate: akun dev dengan getUserQuotaLimit lolos tanpa batas meski dailyQuotaLimit sistem = 1', async () => {
-  const devUser = { id: 'user-dev-cyeverty', email: 'cyevertye@gmail.com' };
+  const devUser = { id: 'user-mock-dev-1', email: 'mock-dev@example.com' };
   const deps = createQuotaMockDeps({
     dailyQuotaLimit: 1, // Batas umum sangat ketat: 1 panggilan
-    getUserQuotaLimit: (u) => getUserDailyQuotaLimit(u, 'cyevertye@gmail.com', '1'),
+    getUserQuotaLimit: (u) => getUserDailyQuotaLimit(u, 'mock-dev@example.com', '1'),
     async getAuthUser() {
       return { user: devUser, error: null };
     },
@@ -301,6 +301,6 @@ test('handleGenerate: akun dev dengan getUserQuotaLimit lolos tanpa batas meski 
     feature: 'summary',
     regenerate: true,
   });
-  assert.equal(res2.status, 200, 'Akun dev cyeverty harus tetap sukses di panggilan ke-2');
+  assert.equal(res2.status, 200, 'Akun dev harus tetap sukses di panggilan ke-2');
   assert.equal(deps._getUsageCount(), 2);
 });

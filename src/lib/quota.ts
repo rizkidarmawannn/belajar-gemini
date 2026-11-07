@@ -58,8 +58,8 @@ export interface QuotaUserIdentifier {
 /**
  * Memeriksa apakah pengguna termasuk dalam daftar whitelist akun pengembang (DEV_EMAILS).
  * Mendukung pencocokan:
- * - Email persis (misal: cyevertye@gmail.com)
- * - Username atau prefix email (misal: cyeverty)
+ * - Email persis (misal: developer@example.com)
+ * - Username atau prefix email (misal: devuser)
  * - User ID UUID
  */
 export function isDevUnlimitedUser(
@@ -90,9 +90,9 @@ export function isDevUnlimitedUser(
   if (id && list.includes(id)) return true;
   if (metadataUsername && list.includes(metadataUsername)) return true;
 
-  // 2. Pencocokan fleksibel username/prefix email (misal DEV_EMAILS="cyeverty", email="cyevertye@gmail.com")
+  // 2. Pencocokan fleksibel username/prefix email (misal DEV_EMAILS="devuser", email="devuser@example.com")
   for (const item of list) {
-    if (email && (email === item || email.startsWith(`${item}@`) || email.startsWith(`${item}e@`))) {
+    if (email && (email === item || email.startsWith(`${item}@`) || email.startsWith(item))) {
       return true;
     }
   }
