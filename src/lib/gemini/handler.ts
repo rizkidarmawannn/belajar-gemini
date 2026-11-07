@@ -458,25 +458,109 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
 
       case 'quiz': {
         const reqCount = body.params.count || 5;
-        const gen = await deps.callGeminiJson(
-          {
-            promptName: 'quiz',
-            variables: {
-              jumlah: reqCount,
-              tingkat: body.params.difficulty,
-              bab: body.params.chapterName || 'semua',
-              modul: moduleContent,
+
+        if (reqCount <= 15) {
+          // Permintaan kuis skala kecil (5-15 butir): 1 panggilan cepat
+          const gen = await deps.callGeminiJson(
+            {
+              promptName: 'quiz',
+              variables: {
+                jumlah: reqCount,
+                tingkat: body.params.difficulty,
+                bab: body.params.chapterName || 'semua',
+                modul: moduleContent,
+              },
+              attemptTimeoutMs: 20000,
+              totalDeadlineMs: 40000,
             },
-            attemptTimeoutMs: reqCount > 20 ? 45000 : 25000,
-            totalDeadlineMs: 55000,
-          },
-          validateAndSanitizeQuiz,
-          reqCount,
-          mergeQuizResults
-        );
-        resultData = gen.data;
-        tokensIn = gen.tokensIn;
-        tokensOut = gen.tokensOut;
+            validateAndSanitizeQuiz,
+            reqCount,
+            mergeQuizResults
+          );
+          resultData = gen.data;
+          tokensIn = gen.tokensIn;
+          tokensOut = gen.tokensOut;
+        } else {
+          // Permintaan kuis skala besar (20, 25, 50, 100 butir):
+          // Eksekusi sub-batch paralel menggunakan Promise.all agar waktu proses total tetap singkat (< 8-10 detik)
+          // dan bebas dari risiko timeout serverless Netlify/Vercel (504 Gateway Timeout).
+          const BATCH_SIZE = reqCount >= 60 ? 20 : reqCount >= 30 ? 15 : 10;
+          const numBatches = Math.ceil(reqCount / BATCH_SIZE);
+
+          const chunksList = Array.isArray(chunksData) ? chunksData : [];
+          const canPartitionChunks = chunksList.length >= numBatches && !body.chapterPosition;
+
+          const batchPromises = Array.from({ length: numBatches }, async (_, idx) => {
+            const isLast = idx === numBatches - 1;
+            const subCount = isLast ? reqCount - idx * BATCH_SIZE : BATCH_SIZE;
+
+            let subModuleContent = moduleContent;
+            let subBabName = body.params.chapterName || 'semua';
+
+            if (canPartitionChunks) {
+              const startIdx = Math.floor((idx * chunksList.length) / numBatches);
+              const endIdx = Math.floor(((idx + 1) * chunksList.length) / numBatches);
+              const slice = chunksList.slice(startIdx, endIdx);
+              if (slice.length > 0) {
+                subModuleContent = slice
+                  .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+                  .join('\n\n---\n\n');
+                subBabName = slice.map((c: any) => c.chapter_title).join(', ');
+              }
+            } else {
+              subBabName = `${body.params.chapterName || 'Umum'} (Paket Bagian ${idx + 1})`;
+            }
+
+            return await deps.callGeminiJson(
+              {
+                promptName: 'quiz',
+                variables: {
+                  jumlah: subCount,
+                  tingkat: body.params.difficulty,
+                  bab: subBabName,
+                  modul: subModuleContent,
+                },
+                attemptTimeoutMs: 25000,
+                totalDeadlineMs: 45000,
+              },
+              validateAndSanitizeQuiz,
+              subCount,
+              mergeQuizResults
+            );
+          });
+
+          const batchResults = await Promise.all(batchPromises);
+
+          let combinedSoal: any[] = [];
+          tokensIn = 0;
+          tokensOut = 0;
+
+          for (const res of batchResults) {
+            tokensIn += res.tokensIn || 0;
+            tokensOut += res.tokensOut || 0;
+            const soalArr = res.data?.soal || [];
+            combinedSoal = [...combinedSoal, ...soalArr];
+          }
+
+          // Deduplikasi berdasarkan teks pertanyaan
+          const seenQ = new Set<string>();
+          const uniqueSoal: any[] = [];
+          for (const s of combinedSoal) {
+            const qKey = (s.pertanyaan || '').trim().toLowerCase();
+            if (!seenQ.has(qKey)) {
+              seenQ.add(qKey);
+              uniqueSoal.push(s);
+            }
+          }
+
+          // Nomor ulang terurut 1..N
+          const renumbered = uniqueSoal.slice(0, reqCount).map((s, i) => ({
+            ...s,
+            nomor: i + 1,
+          }));
+
+          resultData = { soal: renumbered };
+        }
         break;
       }
 

@@ -6,5 +6,8 @@
   SECRETS_SCAN_OMIT_PATHS = "tests/"
   SECRETS_SCAN_OMIT_KEYS = "DEV_EMAILS,NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_ANON_KEY"
 
+[functions]
+  node_bundler = "esbuild"
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"

@@ -75,12 +75,28 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       });
 
       if (!response.ok) {
-        const errJson = await response.json();
-        throw new Error(errJson.error || 'Gagal membuat kuis AI.');
+        let errorMsg = 'Gagal membuat kuis AI.';
+        try {
+          const errJson = await response.json();
+          errorMsg = errJson.error || errorMsg;
+        } catch {
+          if (response.status === 504 || response.status === 502) {
+            errorMsg = 'Waktu serverless habis (Gateway Timeout). Mohon coba lagi.';
+          } else {
+            errorMsg = `Server merespons status ${response.status}.`;
+          }
+        }
+        throw new Error(errorMsg);
       }
 
-      const json = await response.json();
-      const questions = json.result?.soal || [];
+      let json: any = null;
+      try {
+        json = await response.json();
+      } catch {
+        throw new Error('Respons dari server tidak valid (bukan JSON).');
+      }
+
+      const questions = json?.result?.soal || [];
       if (questions.length === 0) {
         throw new Error('AI tidak berhasil menyusun soal kuis yang valid.');
       }
