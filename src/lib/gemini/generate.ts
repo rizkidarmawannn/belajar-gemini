@@ -50,7 +50,10 @@ function isTransientError(error: any): boolean {
     msg.includes('overloaded') ||
     msg.includes('503') ||
     msg.includes('500') ||
-    msg.includes('timeout')
+    msg.includes('timeout') ||
+    msg.includes('format json') ||
+    msg.includes('json') ||
+    msg.includes('parse')
   );
 }
 

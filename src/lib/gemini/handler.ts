@@ -529,17 +529,25 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             );
           });
 
-          const batchResults = await Promise.all(batchPromises);
+          const batchResults = await Promise.allSettled(batchPromises);
 
           let combinedSoal: any[] = [];
           tokensIn = 0;
           tokensOut = 0;
 
           for (const res of batchResults) {
-            tokensIn += res.tokensIn || 0;
-            tokensOut += res.tokensOut || 0;
-            const soalArr = res.data?.soal || [];
-            combinedSoal = [...combinedSoal, ...soalArr];
+            if (res.status === 'fulfilled') {
+              tokensIn += res.value.tokensIn || 0;
+              tokensOut += res.value.tokensOut || 0;
+              const soalArr = res.value.data?.soal || [];
+              combinedSoal = [...combinedSoal, ...soalArr];
+            } else {
+              console.warn('[Quiz Batch Warning] Satu sub-batch gagal:', res.reason?.message);
+            }
+          }
+
+          if (combinedSoal.length === 0) {
+            throw new Error('AI tidak berhasil menyusun soal kuis yang valid. Silakan coba kembali sesaat lagi.');
           }
 
           // Deduplikasi berdasarkan teks pertanyaan

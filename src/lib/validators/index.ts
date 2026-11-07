@@ -106,8 +106,37 @@ export function cleanAndParseJson(rawText: string): any {
 
   try {
     return JSON.parse(cleaned);
-  } catch (err: any) {
-    throw new Error(`Format JSON model tidak valid: ${err.message}. Teks: ${cleaned.slice(0, 100)}...`);
+  } catch (firstErr: any) {
+    // 3. Pemulihan glitch format JSON umum dari LLM:
+    // a. Buang trailing comma sebelum penutup } atau ] (misal `{"a": 1, }`)
+    let repaired = cleaned.replace(/,\s*([}\]])/g, '$1');
+
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      // b. Pemulihan bila ada kurung siku / kurung kurawal yang belum tertutup
+      const openBraces = (repaired.match(/\{/g) || []).length;
+      const closeBraces = (repaired.match(/\}/g) || []).length;
+      const openBrackets = (repaired.match(/\[/g) || []).length;
+      const closeBrackets = (repaired.match(/\]/g) || []).length;
+
+      let suffix = '';
+      // Tambahkan kurung tutup yang hilang
+      if (openBrackets > closeBrackets) {
+        suffix += ']'.repeat(openBrackets - closeBrackets);
+      }
+      if (openBraces > closeBraces) {
+        suffix += '}'.repeat(openBraces - closeBraces);
+      }
+
+      if (suffix) {
+        try {
+          return JSON.parse(repaired + suffix);
+        } catch {}
+      }
+
+      throw new Error(`Format JSON model tidak valid: ${firstErr.message}. Teks: ${cleaned.slice(0, 100)}...`);
+    }
   }
 }
 
