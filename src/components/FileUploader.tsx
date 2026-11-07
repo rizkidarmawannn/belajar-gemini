@@ -142,10 +142,18 @@ export default function FileUploader({ onSuccess }: FileUploaderProps) {
         method: 'POST',
       });
 
-      const processJson = await processRes.json();
+      let processJson: any = null;
+      try {
+        processJson = await processRes.json();
+      } catch {
+        // Respons bukan JSON (misal HTML error atau proteksi Netlify Edge Access)
+      }
 
       if (!processRes.ok) {
-        throw new Error(processJson.error || 'Gagal memproses dan mengekstrak modul.');
+        if (processRes.status === 401) {
+          throw new Error('Akses API ditolak oleh proteksi Netlify (Situs masih Private). Silakan klik tombol "Make public" di Netlify.');
+        }
+        throw new Error(processJson?.error || `Gagal memproses dan mengekstrak modul (Status HTTP ${processRes.status}).`);
       }
 
       setStatus('success');

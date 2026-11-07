@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   BookOpen,
   Sparkles,
@@ -12,6 +13,8 @@ import {
   CheckCircle2,
   PenTool,
   AlertCircle,
+  Trash2,
+  Loader2,
 } from 'lucide-react';
 import QuotaBadge from '@/components/QuotaBadge';
 import ChaptersTab from './tabs/ChaptersTab';
@@ -46,11 +49,39 @@ export default function ModuleViewer({
   initialFlashcards = [],
   initialQuizAttempts = [],
 }: ModuleViewerProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<
     'chapters' | 'summary' | 'flashcards' | 'quiz' | 'qa' | 'mnemonic' | 'essay'
   >('chapters');
   const [selectedChapter, setSelectedChapter] = useState<number | 'all'>('all');
   const [errorMessage, setErrorMessage] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const handleDeleteModule = async () => {
+    setIsDeleting(true);
+    setErrorMessage('');
+    try {
+      const res = await fetch(`/api/modules/${module.id}`, {
+        method: 'DELETE',
+      });
+      let json: any = null;
+      try {
+        json = await res.json();
+      } catch {}
+
+      if (!res.ok) {
+        throw new Error(json?.error || `Gagal menghapus modul (Status HTTP ${res.status}).`);
+      }
+
+      router.push('/');
+      router.refresh();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Terjadi kesalahan saat menghapus modul.');
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-16">
@@ -83,8 +114,17 @@ export default function ModuleViewer({
             </div>
           </div>
 
-          <div className="flex items-center">
+          <div className="flex items-center gap-3">
             <QuotaBadge />
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={isDeleting}
+              title="Hapus Modul Ini"
+              className="px-3 py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/70 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 text-rose-700 dark:text-rose-300 text-xs font-medium transition flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+              <span>Hapus Modul</span>
+            </button>
           </div>
         </div>
       </div>
@@ -263,6 +303,52 @@ export default function ModuleViewer({
           moduleId={module.id}
           onError={setErrorMessage}
         />
+      )}
+
+      {/* Modal Konfirmasi Hapus Modul */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/50 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-sm w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Hapus Modul Belajar Ini?
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                Modul <strong className="text-slate-800 dark:text-slate-200">&quot;{module.title}&quot;</strong> beserta seluruh rangkuman, flashcard, dan riwayat kuis akan dihapus permanen.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 py-2.5 px-3 rounded-xl border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-medium text-xs hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteModule}
+                className="flex-1 py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-medium text-xs shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <span>Ya, Hapus</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

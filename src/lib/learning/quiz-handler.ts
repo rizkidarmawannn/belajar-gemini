@@ -1,14 +1,14 @@
 import { z } from 'zod';
 import { createClient } from '../supabase/server.ts';
 
-// Batas ukuran payload request simpan hasil kuis (128 KB)
-// Quiz attempts membutuhkan batas lebih besar (128 KB vs 64 KB) karena menyimpan struktur lengkap
-// hingga 50 butir soal: pertanyaan, opsi jawaban, penjelasan pembahasan, dan status kebenaran tiap butir.
-export const MAX_QUIZ_ATTEMPT_PAYLOAD_BYTES = 128 * 1024;
+// Batas ukuran payload request simpan hasil kuis (512 KB)
+// Quiz attempts membutuhkan batas memadai (512 KB) untuk mendukung struktur lengkap
+// hingga 100 butir soal: pertanyaan, opsi jawaban, penjelasan pembahasan, dan status kebenaran tiap butir.
+export const MAX_QUIZ_ATTEMPT_PAYLOAD_BYTES = 512 * 1024;
 
 export const AnswerItemSchema = z
   .object({
-    nomor: z.number().int().min(1).max(50),
+    nomor: z.number().int().min(1).max(100),
     pertanyaan: z.string().trim().min(1).max(500, 'Pertanyaan maksimal 500 karakter'),
     userAnswer: z.string().trim().min(1).max(100, 'Jawaban pengguna maksimal 100 karakter'),
     kunci: z.string().trim().min(1).max(10, 'Kunci jawaban maksimal 10 karakter'),
@@ -20,8 +20,8 @@ export const AnswerItemSchema = z
 export const SaveAttemptSchema = z
   .object({
     score: z.number().int().min(0),
-    total: z.number().int().min(1).max(50, 'Total soal maksimal 50'),
-    answers: z.array(AnswerItemSchema).min(1).max(50, 'Maksimal 50 butir jawaban'),
+    total: z.number().int().min(1).max(100, 'Total soal maksimal 100'),
+    answers: z.array(AnswerItemSchema).min(1).max(100, 'Maksimal 100 butir jawaban'),
   })
   .strict()
   .refine((data) => data.score <= data.total, {

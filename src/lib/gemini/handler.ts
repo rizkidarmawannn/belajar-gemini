@@ -25,7 +25,7 @@ export const StrictParamsSchema = z
   .object({
     style: z.enum(['singkat', 'lengkap']).optional().default('singkat'),
     maxPoints: z.number().int().min(1).max(20).optional().default(8),
-    count: z.number().int().min(1).max(20).optional().default(5),
+    count: z.number().int().min(1).max(100).optional().default(5),
     difficulty: z.enum(['mudah', 'sedang', 'sulit', 'campuran']).optional().default('sedang'),
     chapterName: z.string().max(100, 'Nama bab maksimal 100 karakter').optional().default('semua'),
     topic: z.string().max(200, 'Topik maksimal 200 karakter').optional(),
@@ -457,19 +457,21 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       }
 
       case 'quiz': {
+        const reqCount = body.params.count || 5;
         const gen = await deps.callGeminiJson(
           {
             promptName: 'quiz',
             variables: {
-              jumlah: body.params.count,
+              jumlah: reqCount,
               tingkat: body.params.difficulty,
               bab: body.params.chapterName || 'semua',
               modul: moduleContent,
             },
-            totalDeadlineMs: 48000,
+            attemptTimeoutMs: reqCount > 20 ? 45000 : 25000,
+            totalDeadlineMs: 55000,
           },
           validateAndSanitizeQuiz,
-          body.params.count,
+          reqCount,
           mergeQuizResults
         );
         resultData = gen.data;

@@ -1,0 +1,99 @@
+# Modul 06: Menulis Ilmiah (MKWN4108)
+Penulis: Prof. Dr. Anang Santoso, M.Pd.
+
+---
+
+## BAB 1: Kegiatan Belajar 1 - Hakikat dan Unsur-Unsur Proposal
+
+Saudara mahasiswa, materi Kegiatan Belajar 1 adalah menulis proposal. Melalui kegiatan belajar ini, Anda memperoleh pengetahuan dan pemahaman yang cukup mengenai menulis proposal. Menulis artikel ilmiah memiliki beberapa fungsi, yaitu (1) sebagai bahan rujukan atau referensi untuk persiapan dalam penulisan karya tulis, (2) sebagai fungsi edukatif, ketika kita menulis artikel ilmiah, wawasan yang didapat akan meningkat terhadap berbagai bidang keilmuan, (3) sebagai fungsi sentral, artikel ilmiah mampu memperluas wawasan kepada masyarakat umumnya dalam perkembangan ilmu (Widodo, 2018). Berdasarkan hal tersebut, pengetahuan dan pemahaman proposal sangat penting untuk mahasiswa. Materi yang disajikan dalam Kegiatan Belajar 1 ini adalah hakikat proposal, unsur-unsur proposal, kriteria proposal yang baik, dan langkah-langkah menulis proposal.
+
+Richard Bach menyatakan: "Banyak orang bertanya mengenai bagaimana menjadi seorang penulis yang produktif dan profesional? Jawabannya hanya menulis, menulis, menulis, dan menulis."
+
+### A. Hakikat Proposal
+Hakikat dari sebuah proposal adalah dokumen tertulis yang digunakan untuk mengajukan ide, proyek, atau rencana kepada pihak lain, biasanya dengan tujuan mendapatkan persetujuan, dukungan, atau pembiayaan. Proposal umumnya digunakan dalam berbagai konteks, termasuk bisnis, akademik, penelitian, organisasi nirlaba, pemerintahan, dan lainnya.
+Dalam Kamus Besar Bahasa Indonesia (KBBI), kata proposal merujuk pada rencana kerja yang dituangkan dalam bentuk rancangan kerja. Menurut Darmalaksana (2020), proposal penelitian adalah jenis karya ilmiah yang bertujuan mengusulkan capaian penelitian, baik dalam bidang sains maupun akademisi, serta berharap sponsor mendanai kegiatan tersebut. Singkatnya, proposal penelitian disusun untuk memberikan gambaran tentang rancangan kegiatan penelitian yang akan dilaksanakan, memuat topik yang dipilih sampai dengan hipotesis serta rencana anggaran biaya (RAB).
+
+Proposal memiliki setidaknya 11 tujuan penulisan:
+1. Mendapatkan persetujuan dari pihak yang berwenang (manajemen, sponsor, dsb.).
+2. Mendapatkan pembiayaan atau investasi dana proyek.
+3. Mendapatkan izin atau lisensi penyelenggaraan kegiatan atau pembangunan.
+4. Menyampaikan rencana atau ide secara sistematis kepada pihak berkepentingan.
+5. Menjelaskan manfaat dan dampak positif dari pelaksanaan rencana.
+6. Memastikan pemahaman bersama antara penulis dan penerima sasaran.
+7. Mendefinisikan perincian implementasi, jadwal kerja, dan anggaran biaya.
+8. Mengajukan inovasi atau solusi baru untuk masalah yang ada.
+9. Mendokumentasikan dan mengomunikasikan ide secara resmi.
+10. Mendapatkan umpan balik atau masukan sebelum ide dijalankan.
+11. Membangun argumentasi dan bukti yang kuat tentang kevalidan rencana (Soejoto dkk., 2017).
+
+Bagi mahasiswa, proposal penelitian berfungsi sebagai penuntun peneliti dalam melaksanakan penelitian, alat komunikasi antarpeneliti, dan kesepakatan dengan dosen pembimbing (Hidayah, 2016).
+
+### B. Unsur-Unsur Proposal
+Secara umum, proposal penelitian mencakup empat bagian utama (Basaria, 2021):
+
+1. Pengembangan Bagian Awal:
+Komponen awal meliputi halaman sampul, logo, halaman judul, daftar isi, daftar gambar, daftar tabel, daftar istilah, dan ucapan terima kasih. Pada tahap lanjut setelah penelitian selesai, ditambahkan lembar persetujuan pembimbing, pengesahan, surat pernyataan keaslian, dan ringkasan.
+
+2. Pengembangan Bagian Pendahuluan:
+- Latar Belakang Masalah: Menguraikan alasan rasional mengapa masalah tersebut timbul dan penting diteliti, menyajikan gejala-gejala faktual, serta mengaitkannya dengan hasil penelitian terdahulu yang relevan.
+- Rumusan Masalah: Fokus penajaman masalah dalam bentuk pertanyaan penelitian yang spesifik, terukur, dan menggunakan kalimat tanya (5W+1H).
+- Tujuan Penelitian: Hasil konkret yang ingin dicapai setelah penelitian selesai, dirumuskan konsisten dengan rumusan masalah.
+- Asumsi dan Hipotesis: Asumsi merupakan anggapan dasar yang kebenarannya tidak diragukan lagi, sedangkan hipotesis adalah jawaban sementara yang diuji kebenarannya melalui penelitian.
+- Tinjauan Pustaka: Analisis kritis terhadap literatur, teori, dan hasil penelitian terdahulu untuk menegaskan kebaruan (novelty) penelitian.
+- Metode Penelitian: Garis besar rancangan penelitian, jenis penelitian, instrumen, subjek populasi/sampel, teknik pengumpulan data, dan teknik analisis data.
+
+3. Pengembangan Bagian Isi:
+Memaparkan temuan-temuan, analisis data, dan pembahasan rinci untuk menjawab setiap pertanyaan dalam rumusan masalah secara argumentatif, sistematis, dan objektif, didukung tabel dan grafik visual.
+
+4. Pengembangan Bagian Penutup:
+- Kesimpulan: Jawaban ringkas, padat, dan representatif atas rumusan masalah, bukan sekadar rangkuman.
+- Saran: Rekomendasi konkret yang ditujukan kepada pihak terkait berdasarkan temuan penelitian.
+- Daftar Pustaka: Identitas sumber rujukan ilmiah (buku, jurnal terbaru maksimal 10 tahun terakhir) sebagai bentuk penghargaan atas karya cipta dan indikator bobot ilmiah (Tantawi, 2019).
+
+### C. Kriteria Proposal Penelitian yang Baik
+1. Bagian Substansi: Memenuhi unsur keaslian (originalitas/bebas plagiasi), kemutakhiran (referensi 10 tahun terakhir), serta manfaat teoretis dan praktis.
+2. Kelayakan Aspek Proposal: Judul jelas dan menarik, latar belakang argumentatif, perumusan masalah tajam, metodologi tepat, rencana jadwal dan anggaran realistis.
+3. Aspek Kebahasaan: Menggunakan bahasa Indonesia baku, lugas, denotatif, logis, terbebas dari kesalahan tata bahasa dan ejaan (EYD/PUEBI), serta paragraf yang padu (kohesif dan koheren).
+
+### D. Langkah-Langkah Mempersiapkan Penulisan Proposal
+1. Persiapan: Mengamati fenomena lingkungan sekitar, merumuskan topik dan tujuan.
+2. Mengumpulkan Bahan: Menelusuri sumber rujukan kredibel (jurnal ilmiah terakreditasi).
+3. Membuat Draf: Menyusun proposal sesuai gaya selingkung instansi.
+4. Bimbingan dan Revisi: Berkonsultasi dengan dosen pembimbing dan menyempurnakan tulisan.
+
+---
+
+## BAB 2: Kegiatan Belajar 2 - Menulis Artikel Ilmiah
+
+### A. Pengertian Artikel Ilmiah
+Artikel ilmiah adalah karya tulis yang memuat dan mengkaji suatu masalah tertentu dengan menggunakan kaidah-kaidah keilmuan (Ghufron, 2014). Sifat artikel ilmiah meliputi objektif, logis, empiris (berdasarkan fakta), sistematis, lugas, jelas, dan konsisten.
+
+Artikel ilmiah dibedakan menjadi dua jenis:
+1. Artikel Ilmiah Murni: Dipublikasikan di jurnal ilmiah atau prosiding, mengikuti sistematika ketat (IMRAD: Introduction, Method, Results, and Discussion), menggunakan ragam bahasa baku dan istilah teknis keilmuan.
+2. Artikel Ilmiah Populer: Dipublikasikan di media massa umum (koran, majalah, portal berita), menyajikan tema-tema hangat yang sedang aktual, menggunakan bahasa yang santai, komunikatif, dan mudah dipahami masyarakat awam.
+
+Perbedaan Utama:
+- Bahasa: Murni memakai ragam baku dan teknis; Populer memakai bahasa umum yang luwes.
+- Aktualisasi: Murni tidak mutlak bergantung isu hangat; Populer sangat mementingkan aktualitas topik.
+- Sasaran: Murni ditujukan untuk komunitas akademisi/peneliti; Populer ditujukan untuk khalayak umum.
+- Sistematika: Murni terikat format baku jurnal; Populer lebih fleksibel dan bebas.
+
+### B. Jenis-Jenis Artikel Ilmiah
+1. Artikel Hasil Penelitian: Menyajikan hasil penelitian lapangan/laboratorium lengkap (judul, abstrak, pendahuluan, metode, hasil, pembahasan, kesimpulan).
+2. Artikel Konseptual: Mengembangkan gagasan teoretis penulis didukung telaah pustaka tanpa penelitian empiris langsung.
+3. Artikel Resensi Buku (Review): Mengulas dan menilai kualitas, kelebihan, serta kelemahan suatu buku baru.
+4. Artikel Obituari: Tulisan penghormatan atas wafatnya ilmuwan atau tokoh terkemuka, mengulas jasa dan rekam jejak intelektualnya.
+
+### C. Kriteria Artikel Ilmiah yang Baik
+1. Struktur Penyajian: Terdiri dari bagian pendahuluan, isi (pembahasan), dan penutup.
+2. Substansi: Mengkaji bidang keilmuan yang jelas, didukung data empiris dan analisis kritis.
+3. Sikap Penulis: Bersifat objektif, impersonal (menggunakan kalimat pasif/tanpa kata ganti orang pertama 'saya' atau 'kami'), serta tidak memutarbalikkan fakta.
+4. Bahasa: Menggunakan kalimat efektif, kosakata tepat, ejaan yang benar, serta penalaran yang runtut.
+
+### D. Langkah-Langkah Menulis Artikel Ilmiah
+1. Persiapan: Menentukan topik dan sasaran jurnal pembaca.
+2. Mengumpulkan Bahan: Menghimpun referensi rujukan ilmiah yang relevan.
+3. Membuat Draf: Menyusun naskah mengikuti pedoman gaya selingkung jurnal tujuan.
+4. Merevisi: Menilai kembali kesesuaian argumen dan alur berpikir.
+5. Menyunting (Editing): Memperbaiki kesalahan tata bahasa, ejaan, dan tanda baca.
+6. Publikasi: Mengirimkan naskah ke dewan redaksi jurnal ilmiah.

@@ -319,7 +319,7 @@ test('Quiz Attempts POST: Skor lebih tinggi dari total soal ditolak dengan 400',
   assert.match(json.error, /tidak valid/i);
 });
 
-test('Quiz Attempts POST: Total soal lebih dari 50 butir ditolak dengan 400', async () => {
+test('Quiz Attempts POST: Total soal lebih dari 100 butir ditolak dengan 400', async () => {
   const deps = {
     getAuthUser: async () => ({ user: MOCK_USER_A, error: null }),
     getModule: async () => ({ data: { id: MOCK_MODULE_ID }, error: null }),
@@ -328,8 +328,8 @@ test('Quiz Attempts POST: Total soal lebih dari 50 butir ditolak dengan 400', as
   };
 
   const invalidAttempt = {
-    score: 40,
-    total: 51,
+    score: 80,
+    total: 101,
     answers: [
       {
         nomor: 1,
@@ -466,7 +466,7 @@ test('Flashcards PATCH (Review): Payload string melebihi 64 KB ditolak dengan st
   assert.equal(authCalled, false);
 });
 
-test('Quiz Attempts POST: Payload string melebihi 128 KB ditolak dengan status 413 sebelum JSON.parse & Zod', async () => {
+test('Quiz Attempts POST: Payload string melebihi batas (512 KB) ditolak dengan status 413 sebelum JSON.parse & Zod', async () => {
   let authCalled = false;
   const deps = {
     getAuthUser: async () => {
@@ -483,7 +483,7 @@ test('Quiz Attempts POST: Payload string melebihi 128 KB ditolak dengan status 4
     total: 10,
     answers: Array.from({ length: 50 }, (_, i) => ({
       nomor: i + 1,
-      pertanyaan: 'X'.repeat(3000), // Total > 150 KB
+      pertanyaan: 'X'.repeat(12000), // Total > 600 KB (melebihi batas 512 KB)
       userAnswer: 'A',
       kunci: 'A',
       isCorrect: true,

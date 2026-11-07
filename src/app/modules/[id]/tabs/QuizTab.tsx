@@ -204,10 +204,18 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
               <select
                 value={quizCount}
                 onChange={(e) => setQuizCount(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs outline-none"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-xs outline-none focus:ring-2 focus:ring-indigo-500/20"
               >
-                <option value={5}>5 Soal Latihan</option>
-                <option value={10}>10 Soal Latihan</option>
+                <option value={5}>5 Soal (Cepat)</option>
+                <option value={10}>10 Soal (Standar)</option>
+                <option value={15}>15 Soal</option>
+                <option value={20}>20 Soal (Latihan Lengkap)</option>
+                <option value={25}>25 Soal (Ujian Harian)</option>
+                <option value={30}>30 Soal</option>
+                <option value={40}>40 Soal</option>
+                <option value={50}>50 Soal (Ujian Tengah Semester)</option>
+                <option value={75}>75 Soal (Latihan Intensif)</option>
+                <option value={100}>100 Soal (Tryout Komprehensif)</option>
               </select>
             </div>
 
@@ -250,9 +258,27 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         )}
       </div>
 
+      {/* Status Saat Menyusun Soal Banyak */}
+      {isGeneratingQuiz && quizCount >= 20 && (
+        <div className="p-4 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200 text-xs flex items-center gap-3 animate-pulse">
+          <Loader2 className="w-4 h-4 animate-spin text-indigo-600 flex-shrink-0" />
+          <span>
+            AI sedang menyusun <strong>{quizCount} butir soal</strong> latihan secara mendalam beserta opsi dan pembahasannya. Mohon tunggu sekitar 15–30 detik...
+          </span>
+        </div>
+      )}
+
       {/* Sesi Kuis Berjalan (1 Soal Per Layar) */}
       {quizQuestions.length > 0 && !isQuizFinished && (
         <div className="bg-white dark:bg-slate-900 p-6 md:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
+          {/* Progress Bar */}
+          <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+            <div
+              className="bg-indigo-600 dark:bg-indigo-500 h-full transition-all duration-300"
+              style={{ width: `${((currentQIndex + 1) / quizQuestions.length) * 100}%` }}
+            />
+          </div>
+
           <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
