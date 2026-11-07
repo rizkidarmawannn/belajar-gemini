@@ -290,9 +290,9 @@ function createMockDeps(overrides = {}) {
         error: null,
       };
     },
-    // Mock fungsi RPC atomik Postgres `reserve_usage`
+    // Mock fungsi RPC atomik Postgres `reserve_usage` (sesuai migrasi 0003_reserve_usage_unlimited)
     async reserveUsage(userId, feature, limit, tokensIn) {
-      if (currentUsageCount >= limit) {
+      if (limit > 0 && currentUsageCount >= limit) {
         return { id: null, error: null }; // Kuota habis
       }
       currentUsageCount++;
@@ -826,4 +826,24 @@ test('Route Handler ASLI: stream yang mengalami error koneksi di tengah jalan TI
   // Cache generations TIDAK BOLEH disimpan untuk teks error mid-stream!
   const cacheMap = deps._getCacheMap();
   assert.equal(cacheMap.size, 0, 'generations cache harus kosong bila stream error di tengah jalan');
+});
+
+test('Route Handler ASLI: Permintaan POST /api/generate melebihi 64 KB ditolak dengan status 413', async () => {
+  const deps = createMockDeps();
+
+  // Buat string payload JSON berukuran > 64 KB (70 KB)
+  const oversizedText = JSON.stringify({
+    moduleId: VALID_MODULE_ID,
+    feature: 'qa',
+    params: {
+      question: 'a'.repeat(70 * 1024),
+    },
+  });
+
+  const res = await handleGenerate(deps, oversizedText);
+  assert.equal(res.status, 413);
+  const json = await res.json();
+  assert.match(json.error, /melebihi batas maksimum/i);
+  assert.equal(deps._getGeminiCalls(), 0);
+  assert.equal(deps._getUsageRecords().length, 0);
 });

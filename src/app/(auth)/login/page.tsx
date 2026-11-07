@@ -10,7 +10,8 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
-  const [usePassword, setUsePassword] = useState(false);
+  const enableMagicLink = process.env.NEXT_PUBLIC_ENABLE_MAGIC_LINK === 'true';
+  const [usePassword, setUsePassword] = useState(true);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
 
@@ -21,8 +22,8 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient();
-      if (!usePassword) {
-        // Mode Magic Link (OTP Email)
+      if (!usePassword && enableMagicLink) {
+        // Mode Magic Link (OTP Email) - HANYA aktif bila variabel NEXT_PUBLIC_ENABLE_MAGIC_LINK=true
         const { error } = await supabase.auth.signInWithOtp({
           email,
           options: {
@@ -36,7 +37,7 @@ export default function LoginPage() {
           text: 'Tautan masuk telah dikirim ke email Anda! Silakan periksa kotak masuk atau spam.',
         });
       } else {
-        // Mode Password
+        // Mode Password Utama
         if (isSignUp) {
           const { error } = await supabase.auth.signUp({
             email,
@@ -48,7 +49,7 @@ export default function LoginPage() {
           if (error) throw error;
           setMessage({
             type: 'success',
-            text: 'Akun berhasil didaftarkan! Silakan cek email untuk verifikasi atau langsung masuk.',
+            text: 'Akun berhasil didaftarkan! Silakan masuk menggunakan kata sandi Anda.',
           });
         } else {
           const { error } = await supabase.auth.signInWithPassword({
@@ -61,11 +62,22 @@ export default function LoginPage() {
       }
     } catch (err: any) {
       let errorText = err.message || 'Gagal melakukan otentikasi.';
-      if (err.message?.includes('Invalid login credentials')) {
+      const raw = String(err.message || '').toLowerCase();
+
+      if (raw.includes('invalid login credentials')) {
         errorText = 'Email atau kata sandi tidak cocok. Silakan periksa kembali.';
-      } else if (err.message?.includes('User already registered')) {
+      } else if (raw.includes('user already registered')) {
         errorText = 'Email ini sudah terdaftar. Silakan beralih ke tombol Masuk.';
+      } else if (raw.includes('email not confirmed')) {
+        errorText = 'Email belum dikonfirmasi. Silakan hubungi admin atau konfirmasi email Anda.';
+      } else if (raw.includes('rate limit') || raw.includes('over_email_send_rate_limit')) {
+        errorText = 'Batas pengiriman email sistem tercapai. Silakan coba sesaat lagi atau masuk dengan kata sandi.';
+      } else if (raw.includes('signups not allowed') || raw.includes('signup disabled')) {
+        errorText = 'Pendaftaran pengguna baru sedang dinonaktifkan oleh administrator.';
+      } else if (raw.includes('password should be at least')) {
+        errorText = 'Kata sandi harus terdiri dari minimal 6 karakter.';
       }
+
       setMessage({ type: 'error', text: errorText });
     } finally {
       setLoading(false);
@@ -166,31 +178,31 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-6 pt-6 border-t border-slate-200 dark:border-slate-800 flex flex-col gap-3 text-xs text-center text-slate-500 dark:text-slate-400">
-            <button
-              type="button"
-              onClick={() => {
-                setUsePassword(!usePassword);
-                setMessage(null);
-              }}
-              className="hover:text-indigo-600 dark:hover:text-indigo-400 font-medium"
-            >
-              {usePassword ? 'Gunakan Masuk Tanpa Kata Sandi (Magic Link)' : 'Gunakan Kata Sandi'}
-            </button>
-
-            {usePassword && (
+            {enableMagicLink && (
               <button
                 type="button"
                 onClick={() => {
-                  setIsSignUp(!isSignUp);
+                  setUsePassword(!usePassword);
                   setMessage(null);
                 }}
                 className="hover:text-indigo-600 dark:hover:text-indigo-400 font-medium"
               >
-                {isSignUp
-                  ? 'Sudah punya akun? Masuk di sini'
-                  : 'Belum punya akun? Buat akun baru'}
+                {usePassword ? 'Gunakan Masuk Tanpa Kata Sandi (Magic Link)' : 'Gunakan Kata Sandi'}
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsSignUp(!isSignUp);
+                setMessage(null);
+              }}
+              className="hover:text-indigo-600 dark:hover:text-indigo-400 font-medium"
+            >
+              {isSignUp
+                ? 'Sudah punya akun? Masuk di sini'
+                : 'Belum punya akun? Buat akun baru'}
+            </button>
           </div>
         </div>
       </div>

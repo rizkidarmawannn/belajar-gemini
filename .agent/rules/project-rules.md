@@ -18,3 +18,4 @@
 14. File modul tidak pernah dikirim lewat route Next.js (batas 4,5 MB Vercel); unggah langsung ke Supabase Storage.
 15. Route yang memanggil Gemini wajib memverifikasi pengguna, memeriksa kepemilikan modul, memeriksa kuota, dan memeriksa cache sebelum memanggil API.
 16. Rahasia hanya di environment variable dan tidak pernah berawalan `NEXT_PUBLIC_`, kecuali URL dan anon key Supabase.
+17. Jangan menjalankan git commit atau git push tanpa persetujuan eksplisit pengguna. Bekerja di branch fitur, bukan langsung di main.

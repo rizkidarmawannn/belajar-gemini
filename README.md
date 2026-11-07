@@ -1,169 +1,170 @@
-# Paket Proyek: Aplikasi Belajar Berbasis Gemini
+# Belajar Cerdas — Asisten Belajar Interaktif Berbasis AI
 
-## Isi paket
-```
-belajar-gemini-pack/
-├── README.md                 <- file ini (cara pakai + prompt bertahap)
-├── .env.example              <- daftar variabel lingkungan (tanpa nilai)
-├── supabase/migrations/0001_init.sql   <- skema database + RLS + bucket Storage
-├── prompts/                  <- template prompt runtime (dikirim ke Gemini)
-│   ├── system.md  summary.md  summary-short.md  flashcards.md
-│   └── mnemonic.md  quiz.md  qa.md  essay-eval.md
-└── .agent/                   <- konfigurasi untuk Antigravity
-    ├── rules/      project-rules.md, security.md
-    ├── workflows/  add-feature.md, review-security.md, deploy-vercel.md
-    └── skills/     9 skill (7 awal + supabase-database + vercel-deploy)
-```
+Aplikasi asisten belajar cerdas berbasis web yang memanfaatkan **Google Gemini API**, **Next.js 15 (App Router)**, **TypeScript**, dan **Supabase (PostgreSQL, Auth, Storage dengan Row Level Security)**. Pengguna dapat mengunggah dokumen modul materi (PDF, DOCX, TXT), dan sistem akan mengekstrak, membagi bab, serta menyediakan fitur belajar interaktif: Ringkasan AI, Flashcard Sistem Leitner (Spaced Repetition), Kuis Pilihan Ganda Interaktif, Tanya Jawab Kontekstual Berbasis Modul, Bantuan Jembatan Keledai (Mnemonic), dan Evaluasi Esai Otomatis.
 
-## Stack yang dipakai
-- **Frontend + backend**: Next.js (App Router, TypeScript) di **Vercel**
-- **Database, login, penyimpanan file**: **Supabase** (Postgres + Auth + Storage, dengan Row Level Security)
-- **AI**: Gemini API, dipanggil hanya dari route server
+---
 
-## Alur utama (dirancang menghindari batas Vercel)
-```
-Browser --unggah file langsung--> Supabase Storage (bucket privat modules/<user_id>/...)
-Browser --POST /api/modules/:id/process (hanya ID)--> Vercel: ekstrak teks -> module_chunks
-Browser --POST /api/generate (ID modul + fitur)--> Vercel: cek login, kuota, cache -> Gemini -> simpan hasil
-```
-Alasannya: Vercel membatasi isi request 4,5 MB, jadi PDF tidak boleh lewat fungsi Vercel. Batas durasi fungsi juga terbatas, jadi pekerjaan besar dipecah per bab.
+## 1. Persyaratan Sistem
+- **Node.js**: Versi `>= 20.0.0` (disarankan Node.js v20 LTS atau v22 LTS yang selaras dengan environment Vercel)
+- **NPM**: Versi `>= 10.0.0`
+- **Akun Supabase**: Proyek aktif dengan database Postgres, Auth, dan Storage
+- **Google AI Studio API Key**: Akses Gemini API (`gemini-2.5-flash` atau `gemini-1.5-flash`)
 
-## Langkah penyiapan sebelum menjalankan prompt
-1. Buat proyek di Supabase (gratis cukup untuk mulai). Jalankan `supabase/migrations/0001_init.sql` di SQL Editor atau lewat Supabase CLI.
-2. Salin `.env.example` menjadi `.env.local`, isi URL dan key Supabase serta `GEMINI_API_KEY` dari Google AI Studio.
-3. Di Supabase > Authentication, aktifkan metode login yang Anda mau (email atau Google).
-4. Simpan proyek di GitHub, lalu hubungkan ke Vercel saat tahap deploy (Tahap 8).
+---
 
-## Cara memasang di Antigravity
-1. Buat folder proyek baru, lalu salin SELURUH isi paket ini ke akar proyek (termasuk folder `.agent` yang tersembunyi).
-2. Buka folder itu di Antigravity.
-3. Skill, rules, dan workflows di `.agent/` dibaca otomatis sebagai konfigurasi tingkat workspace.
-4. Jalankan prompt tahap 1 sampai 8 di bawah, satu per satu. Tinjau hasil tiap tahap sebelum lanjut.
+## 2. Instalasi dan Menjalankan Lokal
 
-Catatan: nama folder konfigurasi Antigravity bisa berubah antarversi. Jika `.agent/` tidak terbaca, cek dokumentasi Antigravity terbaru dan sesuaikan nama foldernya. Isi file tidak perlu diubah.
+1. **Clone atau Buka Folder Proyek**:
+   ```bash
+   cd "ai bantu belajar"
+   ```
 
-Variabel lingkungan lengkap ada di `.env.example`. Jangan commit nilai aslinya.
-GEMINI_API_KEY=isi_key_anda
-GEMINI_MODEL=nama_model_dari_dokumentasi_terbaru
+2. **Pasang Dependensi**:
+   ```bash
+   npm install
+   ```
+
+3. **Salin dan Konfigurasi Environment Variable**:
+   ```bash
+   cp .env.example .env.local
+   ```
+   Buka file `.env.local` dan isi nilainya (lihat rincian di Bagian 3).
+
+4. **Jalankan Development Server**:
+   ```bash
+   npm run dev
+   ```
+   Aplikasi akan berjalan di **`http://localhost:3000`**.
+   > **Perhatian**: Pastikan selalu membuka `http://localhost:3000` di peramban Anda. Hindari membuka port lama seperti `3001` agar mendapatkan versi aplikasi terbaru.
+
+5. **Menjalankan Pengujian Otomatis**:
+   ```bash
+   npm test
+   ```
+
+6. **Membangun Versi Produksi (Production Build)**:
+   ```bash
+   npm run build
+   ```
+
+---
+
+## 3. Konfigurasi Variabel Lingkungan (`.env.local`)
+
+Salin dari `.env.example` dan sesuaikan nilainya:
+
+```env
+# -----------------------------------------------------------------------------
+# SUPABASE CONFIGURATION
+# -----------------------------------------------------------------------------
+NEXT_PUBLIC_SUPABASE_URL=https://proyek-anda.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...
+
+# KUNCI RAHASIA SERVER (JANGAN PERNAH DIKOMIT ATAU DITAMPILKAN DI CLIENT!)
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
+
+# -----------------------------------------------------------------------------
+# GOOGLE GEMINI API CONFIGURATION
+# -----------------------------------------------------------------------------
+# Dapatkan dari Google AI Studio (https://aistudio.google.com/)
+GEMINI_API_KEY=AIzaSy...
+
+# Nama model yang digunakan untuk inferensi
+GEMINI_MODEL=gemini-2.5-flash
+
+# Versi cache template prompt (increment jika mengubah isi file di folder prompts/)
 PROMPT_VERSION=1
+
+# Batas kuota inferensi harian per pengguna (0 = tanpa batas)
+DAILY_QUOTA_PER_USER=30
+
+# -----------------------------------------------------------------------------
+# FITUR PENGATURAN AKSES (OPSI A: PERSONAL / GRUP TERBATAS)
+# -----------------------------------------------------------------------------
+# Set ke false untuk menyembunyikan formulir pendaftaran publik di UI login
+NEXT_PUBLIC_ENABLE_SIGNUP=false
+
+# Set ke false jika ingin menggunakan Login Kata Sandi (bebas batas email SMTP)
+NEXT_PUBLIC_ENABLE_MAGIC_LINK=false
 ```
 
 ---
 
-## Prompt bertahap untuk Antigravity
+## 4. Urutan Eksekusi Migrasi Database Supabase
 
-### Tahap 1: Perencanaan (jangan menulis kode)
-```
-Baca semua file di .agent/rules dan .agent/skills serta folder prompts.
-Proyek: aplikasi web belajar berbasis Gemini. Pengguna mengunggah modul
-(PDF/DOCX/TXT), lalu bisa meminta ringkasan, flashcard, latihan soal, bantuan
-hafalan, dan bertanya tentang isi modul.
+Sebelum menjalankan aplikasi, Anda **WAJIB** mengeksekusi file migrasi SQL di **Supabase Dashboard > SQL Editor** sesuai urutan berikut:
 
-Stack sudah ditetapkan: Next.js (App Router, TypeScript) di Vercel, Supabase
-(Postgres, Auth, Storage), dan Gemini API dari route server. Skema database
-acuan ada di supabase/migrations/0001_init.sql. Baca juga skill supabase-database
-dan vercel-deploy.
+### Langkah 1: Jalankan `supabase/migrations/0001_init.sql`
+- Membuat tabel inti: `modules`, `module_chunks`, `generations`, `flashcards`, `quiz_attempts`, dan `usage_log`.
+- Mengaktifkan Row Level Security (RLS) pada seluruh tabel.
+- Mengonfigurasi bucket penyimpanan privat `modules` dengan batas ukuran 10 MB dan kebijakan akses per folder `<user_id>/...`.
 
-Buat dokumen rencana: struktur folder, daftar endpoint API, alur upload yang
-menghindari batas 4,5 MB Vercel, strategi memecah pekerjaan Gemini agar aman dari
-batas durasi, halaman UI, dan daftar tugas berurutan. Beri tahu jika ada bagian
-skema yang menurut Anda perlu diubah, tapi jangan mengubahnya tanpa persetujuan.
-Jangan menulis kode dulu.
-```
+### Langkah 2: Jalankan `supabase/migrations/0002_reserve_usage.sql`
+- Membuat fungsi atomik `reserve_usage(p_user_id, p_feature, p_limit, p_tokens_in)` untuk mencegah race condition kuota pada panggilan paralel.
 
-### Tahap 2: Kerangka proyek dan backend dasar
-```
-Buat kerangka proyek Next.js sesuai rencana, termasuk .gitignore (pastikan .env*
-tidak ter-commit, kecuali .env.example), helper klien Supabase (browser, server,
-admin yang server-only), middleware sesi Auth, halaman login/daftar, dan
-konfigurasi. Cek dokumentasi resmi untuk pola @supabase/ssr terbaru.
-Lalu buat alur unggah: browser mengunggah langsung ke Supabase Storage dengan path
-<user_id>/<uuid>.<ext>, membuat baris modules, lalu memanggil
-POST /api/modules/:id/process yang mengunduh file dari Storage, mengekstrak teks
-dari PDF/DOCX/TXT, memecah per bab ke module_chunks, dan mengubah status modul.
-Pilih library ekstraksi PDF yang cocok untuk serverless Node.js.
-Ikuti skill supabase-database dan vercel-deploy.
-```
-
-### Tahap 3: Integrasi Gemini
-```
-Ikuti skill gemini-api-integration dan prompt-templates.
-Buat modul layanan Gemini (server-only) dengan generate_text dan generate_json,
-fungsi render_prompt yang membaca folder prompts/, retry dengan backoff,
-timeout, caching, dan penanganan error berbahasa Indonesia.
-Cek dokumentasi resmi Google untuk SDK dan nama model terbaru sebelum menulis kode.
-Buat route /api/generate dengan urutan: verifikasi pengguna, cek kepemilikan
-modul, validasi input (zod), cek kuota harian di usage_log, cek cache di
-generations, panggil Gemini, validasi hasil, simpan (service role). Atur maxDuration
-eksplisit dan dukung streaming untuk tanya jawab dan ringkasan.
-Buat tes dengan Gemini di-mock. Jangan memanggil API sungguhan di tes.
-```
-
-### Tahap 4: Fitur satu per satu
-Jalankan workflow `add-feature` untuk tiap fitur, urutannya:
-```
-Jalankan workflow add-feature untuk fitur RINGKASAN (ikuti skill summarize-module).
-```
-```
-Jalankan workflow add-feature untuk fitur FLASHCARD (ikuti skill generate-flashcards).
-```
-```
-Jalankan workflow add-feature untuk fitur LATIHAN SOAL (ikuti skill generate-quiz),
-termasuk validator JSON dan riwayat skor.
-```
-```
-Jalankan workflow add-feature untuk fitur TANYA JAWAB dengan sumber bab,
-memakai prompts/qa.md. Pastikan pertanyaan di luar modul dijawab
-"Tidak ditemukan di modul."
-```
-```
-Jalankan workflow add-feature untuk fitur BANTUAN HAFALAN (ikuti skill mnemonic-helper).
-```
-
-### Tahap 5: Antarmuka
-```
-Buat antarmuka yang nyaman di HP dan laptop, seluruh teks berbahasa Indonesia:
-1. Halaman unggah modul dengan progres dan pesan error ramah.
-2. Halaman modul berisi tab: Ringkasan, Flashcard, Latihan Soal, Tanya Jawab, Hafalan.
-3. Ringkasan: bab bisa dilipat, istilah tebal menonjol, tombol salin.
-4. Flashcard: ketuk untuk membalik, tombol Hafal/Belum, filter bab.
-5. Kuis: satu soal per layar, penjelasan setelah menjawab, skor akhir,
-   ulangi soal yang salah.
-6. Mode gelap dan terang.
-Output model harus ditampilkan lewat renderer Markdown yang aman.
-```
-
-### Tahap 6: Cache, kuota, dan riwayat
-```
-Pastikan semua fitur memakai cache tabel generations
-(unik per user, modul, fitur, params_hash, prompt_version).
-Aktifkan kuota harian dari DAILY_QUOTA_PER_USER dan pencatatan token ke usage_log.
-Simpan flashcard ke tabel flashcards dengan pengulangan berjarak (box 1,3,7,14 hari)
-dan hasil kuis ke quiz_attempts. Tambahkan halaman riwayat belajar.
-Tampilkan sisa kuota harian di UI.
-```
-
-### Tahap 7: Pengujian dan keamanan
-```
-Jalankan workflow review-security pada seluruh proyek.
-Lalu jalankan semua tes, perbaiki yang gagal, dan tulis laporan per butir
-daftar periksa dengan perbaikan berurutan dari risiko tertinggi.
-Tambahkan uji akses: akun B tidak boleh membaca modul, kartu, atau file milik akun A.
-Terakhir buat README proyek: cara instal, cara menjalankan, dan variabel lingkungan.
-```
-
-### Tahap 8: Deploy ke Vercel
-```
-Jalankan workflow deploy-vercel. Berikan saya daftar langkah manual yang harus saya
-lakukan sendiri (membuat proyek Supabase produksi, menjalankan migrasi, mengisi
-environment variable di Vercel, mengatur redirect URL Auth, menghubungkan repo).
-Jangan mengisi atau menulis rahasia apa pun. Setelah itu tuliskan daftar uji asap
-untuk saya jalankan di URL produksi.
-```
+### Langkah 3: Jalankan `supabase/migrations/0003_reserve_usage_unlimited.sql`
+- Memperbarui fungsi `reserve_usage` agar mendukung mode tanpa batas kuota (`DAILY_QUOTA_PER_USER=0`) saat `p_limit <= 0`.
+- Mempertahankan advisory lock atomik, `security definer`, dan hak akses khusus `service_role`.
 
 ---
 
-## Tips menggunakan prompt runtime
-- Jadikan pengaturan pengguna sebagai variabel: `gaya`, `maks_poin`, `jumlah`, `tingkat`, `bab`.
-- Uji dulu semua template di Google AI Studio dengan 2 sampai 3 modul contoh sebelum dimasukkan ke aplikasi.
-- Hasil AI tetap perlu dicek manual, terutama untuk materi ujian penting.
+## 5. Manajemen Pengguna & Keamanan (Opsi A: Personal / Kelompok Kecil)
+
+Untuk penggunaan personal atau kelompok belajar kecil tanpa gangguan kuota SMTP:
+
+1. **Registrasi Akun Pertama**:
+   - Nyalakan sementara `NEXT_PUBLIC_ENABLE_SIGNUP=true` di `.env.local` atau buat akun langsung melalui **Supabase Dashboard > Authentication > Users > Add user > Create user (masukkan email & kata sandi)**.
+2. **Kunci Pendaftaran Publik**:
+   - Buka **Supabase Dashboard > Authentication > Providers > Email**:
+     - Matikan (uncheck) **"Enable Signups"** agar tidak ada orang asing yang bisa membuat akun baru.
+     - Pastikan **"Confirm email"** dimatikan jika ingin pengguna langsung login dengan kata sandi tanpa menunggu email konfirmasi.
+   - Di file `.env.local` / Vercel Environment Variables, set `NEXT_PUBLIC_ENABLE_SIGNUP=false` agar formulir pendaftaran tidak muncul di UI.
+3. **Login Menggunakan Email & Kata Sandi**:
+   - Metode ini melewati batasan built-in email Supabase Free Tier (yang dibatasi hanya 2 email/jam).
+
+---
+
+## 6. Panduan Deploy ke Vercel
+
+1. **Persiapan Git Repository**:
+   - Pastikan repository GitHub Anda berstatus **Private**.
+   - Jangan pernah menyertakan file `.env` atau `.env.local` ke dalam git.
+
+2. **Impor Proyek ke Vercel**:
+   - Buka Dashboard [Vercel](https://vercel.com) > **Add New Project** > Impor repo Anda.
+   - Framework Preset: **Next.js**.
+   - Build Command: `npm run build` (default).
+   - Install Command: `npm install` (default).
+
+3. **Konfigurasi Environment Variables di Vercel**:
+   Masukkan variabel-variabel berikut di **Project Settings > Environment Variables**:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY` (Hanya untuk Production/Preview, server-only)
+   - `GEMINI_API_KEY`
+   - `GEMINI_MODEL` (misal: `gemini-2.5-flash`)
+   - `PROMPT_VERSION` (misal: `1`)
+   - `DAILY_QUOTA_PER_USER` (`30` atau `0` untuk mode tanpa batas)
+   - `NEXT_PUBLIC_ENABLE_SIGNUP` (`false`)
+   - `NEXT_PUBLIC_ENABLE_MAGIC_LINK` (`false`)
+
+4. **Konfigurasi Supabase Auth Redirect URLs**:
+   - Buka **Supabase Dashboard > Authentication > URL Configuration**.
+   - **Site URL**: `https://nama-aplikasi-anda.vercel.app`
+   - **Redirect URLs**: Tambahkan `https://nama-aplikasi-anda.vercel.app/**` dan `https://nama-aplikasi-anda.vercel.app/auth/callback`.
+
+---
+
+## 7. Arsitektur Keamanan & Fitur Teknis
+
+1. **Direct Storage Upload (Bypass Vercel 4.5 MB Limit)**:
+   - File dokumen diunggah langsung dari peramban ke Supabase Storage (bucket privat) dengan UUID acak di bawah namespace pengguna (`<user_id>/<file_id>.<ext>`). Route Vercel hanya menerima ID modul untuk memproses teks.
+2. **Bundling Template Prompt Otomatis**:
+   - `next.config.ts` dikonfigurasi dengan `outputFileTracingIncludes: { '/api/**/*': ['./prompts/**/*'] }` sehingga seluruh file Markdown di folder `prompts/` terangkut secara otomatis ke serverless lambda Vercel.
+3. **Pencegahan Header Bloat (`X-Used-Chapters`)**:
+   - Untuk modul berukuran $\le 60.000$ karakter, header hanya mengirim objek ringkas `{ mode: 'all', count: N }` yang di-encode URI sehingga ukuran header sangat kecil (~35 bytes), aman dari batas HTTP header server.
+4. **Proteksi Kuota & Race Condition**:
+   - Fungsi `reserve_usage` mengeksekusi pengecekan kuota harian secara atomik di level Postgres sebelum Gemini dipanggil. Jika kuota habis, permintaan langsung ditolak `429` tanpa membebani Gemini API.
+5. **Sanitasi Prompt & Keamanan Render**:
+   - Input modul disanitasi dari variasi tag `</modul>` untuk mencegah prompt injection.
+   - Output AI dirender menggunakan `react-markdown` yang diperkuat dengan `rehype-sanitize` untuk mencegah eksekusi skrip jahat (XSS).

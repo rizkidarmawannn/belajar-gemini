@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { createClient } from '../supabase/server.ts';
 import { createAdminClient } from '../supabase/admin.ts';
 import { generateText, generateJson, generateStream, formatFriendlyErrorMessage } from './generate.ts';
+import { selectRelevantChapters } from './chapter-selector.ts';
+import type { UsedChapterInfo } from './chapter-selector.ts';
 import {
   validateAndSanitizeQuiz,
   validateAndSanitizeFlashcards,
@@ -10,6 +12,13 @@ import {
   mergeQuizResults,
   mergeFlashcardResults,
 } from '../validators/index.ts';
+import { getDailyQuotaLimit, getUserDailyQuotaLimit } from '../quota.ts';
+
+// Konstanta batas ukuran materi untuk fitur QA seluruh modul (60.000 karakter / ~15.000 token)
+export const QA_FULL_MODULE_CHAR_LIMIT = 60000;
+
+// Konstanta batas payload request POST /api/generate (64 KB)
+export const MAX_GENERATE_PAYLOAD_BYTES = 64 * 1024;
 
 // Skema Validasi Params yang Ketat (.strict() menolak properti asing tak diizinkan)
 export const StrictParamsSchema = z
@@ -48,8 +57,8 @@ export interface GenerateDependencies {
     limit: number,
     tokensIn?: number | null
   ) => Promise<{ id: number | string | null; error: any }>;
-  updateUsageLog: (logId: number | string, tokensIn: number, tokensOut: number) => Promise<void>;
-  deleteUsageLog: (logId: number | string) => Promise<void>;
+  updateUsageLog: (logId: number | string | null, tokensIn: number, tokensOut: number) => Promise<void>;
+  deleteUsageLog: (logId: number | string | null) => Promise<void>;
   getCachedGeneration: (
     userId: string,
     moduleId: string,
@@ -68,11 +77,27 @@ export interface GenerateDependencies {
   callGeminiStream: (opts: any, handlers?: any) => Promise<ReadableStream<Uint8Array>>;
   saveGeneration: (entry: any) => Promise<void>;
   dailyQuotaLimit: number;
+  getUserQuotaLimit?: (user: any) => number;
   promptVersion: string;
 }
 
 // Fungsi inti penanganan generate (dipakai di route POST dan diuji langsung di tes unit)
 export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
+  // 0. Batas Ukuran Payload (Tolak 413 SEBELUM JSON.parse dan SEBELUM Zod)
+  if (typeof rawBody === 'string') {
+    if (Buffer.byteLength(rawBody, 'utf-8') > MAX_GENERATE_PAYLOAD_BYTES) {
+      return Response.json(
+        { error: `Ukuran isi permintaan melebihi batas maksimum (${MAX_GENERATE_PAYLOAD_BYTES / 1024} KB).` },
+        { status: 413 }
+      );
+    }
+    try {
+      rawBody = JSON.parse(rawBody);
+    } catch {
+      return Response.json({ error: 'Format JSON permintaan tidak valid.' }, { status: 400 });
+    }
+  }
+
   // 1. Verifikasi Pengguna
   const { user, error: authError } = await deps.getAuthUser();
   if (authError || !user) {
@@ -137,6 +162,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     );
 
     if (cachedGen) {
+      const cachedUsedChapters = (cachedGen.result as any)?.usedChapters;
+
       // Jika mode stream diminta dan cache hit, kembalikan juga sebagai stream teks dengan header X-Cache: HIT
       if (body.stream && (body.feature === 'qa' || body.feature === 'summary' || body.feature === 'summary_short')) {
         const textContent =
@@ -152,14 +179,17 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           },
         });
 
-        return new Response(stream, {
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'X-Cache': 'HIT',
-            'Cache-Control': 'no-cache, no-transform',
-            'X-Accel-Buffering': 'no',
-          },
-        });
+        const hitHeaders: Record<string, string> = {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Cache': 'HIT',
+          'Cache-Control': 'no-cache, no-transform',
+          'X-Accel-Buffering': 'no',
+        };
+        if (cachedUsedChapters) {
+          hitHeaders['X-Used-Chapters'] = encodeURIComponent(JSON.stringify(cachedUsedChapters));
+        }
+
+        return new Response(stream, { headers: hitHeaders });
       }
 
       return Response.json({
@@ -167,6 +197,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         cached: true,
         feature: body.feature,
         result: cachedGen.result,
+        usedChapters: cachedUsedChapters,
         tokens: {
           in: cachedGen.tokens_in || 0,
           out: cachedGen.tokens_out || 0,
@@ -185,6 +216,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
   }
 
   let moduleContent = '';
+  let usedChaptersPayload: any = undefined;
+
   if (Array.isArray(chunksData)) {
     if (chunksData.length === 0) {
       return Response.json(
@@ -192,18 +225,63 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         { status: 422 }
       );
     }
-    moduleContent = chunksData.map((c: any) => `${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
+
+    // Jika QA tanpa pilihan bab eksplisit (lingkup seluruh modul)
+    if (body.feature === 'qa') {
+      if (!body.chapterPosition) {
+        const totalChars = chunksData.reduce((acc: number, c: any) => acc + (c.content?.length || 0), 0);
+
+        if (totalChars <= QA_FULL_MODULE_CHAR_LIMIT) {
+          // Modul <= 60.000 karakter: Kirim SELURUH modul tanpa seleksi bab
+          moduleContent = chunksData.map((c: any) => `### ${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
+          // Untuk seluruh modul: kirim penanda 'all' dan jumlah bab agar header tetap ramping & aman
+          usedChaptersPayload = { mode: 'all', count: chunksData.length };
+        } else {
+          // Modul besar (> 60.000 karakter): Pilih bab paling relevan berdasarkan kecocokan kata kunci pertanyaan
+          const selection = selectRelevantChapters(chunksData, body.params?.question || '', {
+            maxChapters: 4,
+            maxChars: 45000,
+          });
+
+          // PENTING: Ditolak 400 SEBELUM reserve_usage dipanggil sehingga kuota pengguna TIDAK terpotong!
+          if (!selection.hasMatch || selection.selectedChunks.length === 0) {
+            return Response.json(
+              {
+                error:
+                  'Pertanyaan tidak memiliki kecocokan kata kunci langsung dengan bab tertentu pada modul besar ini. Silakan pilih bab spesifik secara manual melalui menu di atas agar jawaban AI akurat.',
+              },
+              { status: 400 }
+            );
+          }
+
+          // Untuk bab terpilih: kirim maksimal 5 bab
+          usedChaptersPayload = selection.usedChapters.slice(0, 5);
+          moduleContent = selection.selectedChunks
+            .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+            .join('\n\n---\n\n');
+        }
+      }
+    } else {
+      moduleContent = chunksData.map((c: any) => `${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
+    }
   } else {
     moduleContent = `${chunksData.chapter_title}\n\n${chunksData.content}`;
+    if (body.feature === 'qa') {
+      usedChaptersPayload = [{ position: chunksData.position, chapter_title: chunksData.chapter_title }];
+    }
   }
 
   // 6. RESERVASI ATOMIK KUOTA HARIAN (SEBELUM Gemini untuk SEMUA mode)
   // Menutup celah race condition dari puluhan request paralel
+  const effectiveQuotaLimit = typeof deps.getUserQuotaLimit === 'function'
+    ? deps.getUserQuotaLimit(user)
+    : deps.dailyQuotaLimit;
+
   const initialTokensIn = Math.ceil(moduleContent.length / 4);
   const { id: reservedLogId, error: reserveError } = await deps.reserveUsage(
     user.id,
     body.feature,
-    deps.dailyQuotaLimit,
+    effectiveQuotaLimit,
     initialTokensIn
   );
 
@@ -215,12 +293,12 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     );
   }
 
-  // Kuota habis -> tolak dengan 429
-  if (!reservedLogId) {
+  // Kuota habis -> tolak dengan 429 (hanya berlaku jika batas kuota > 0)
+  if (effectiveQuotaLimit > 0 && !reservedLogId) {
     return Response.json(
       {
-        error: `Batas kuota harian Anda telah tercapai (maksimal ${deps.dailyQuotaLimit} panggilan per hari). Silakan coba lagi besok.`,
-        quotaLimit: deps.dailyQuotaLimit,
+        error: `Batas kuota harian Anda telah tercapai (maksimal ${effectiveQuotaLimit} panggilan per hari). Silakan coba lagi besok.`,
+        quotaLimit: effectiveQuotaLimit,
       },
       { status: 429 }
     );
@@ -257,7 +335,10 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             }
 
             // 2. Simpan ke cache (Bentuk result sama persis antara stream dan non-stream: { answer } atau { markdown })
-            const resultToSave = body.feature === 'qa' ? { answer: fullText } : { markdown: fullText };
+            const resultToSave =
+              body.feature === 'qa'
+                ? { answer: fullText, ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}) }
+                : { markdown: fullText };
             try {
               await deps.saveGeneration({
                 user_id: user.id,
@@ -294,13 +375,18 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         }
       );
 
+      const streamHeaders: Record<string, string> = {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Cache': 'MISS',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
+      };
+      if (usedChaptersPayload) {
+        streamHeaders['X-Used-Chapters'] = encodeURIComponent(JSON.stringify(usedChaptersPayload));
+      }
+
       return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'X-Cache': 'MISS',
-          'Cache-Control': 'no-cache, no-transform',
-          'X-Accel-Buffering': 'no',
-        },
+        headers: streamHeaders,
       });
     } catch (streamInitErr: any) {
       // Jika pemanggilan stream gagal sebelum dimulai, refund kuota reservasi
@@ -496,6 +582,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     cached: false,
     feature: body.feature,
     result: resultData,
+    usedChapters: usedChaptersPayload,
     tokens: {
       in: tokensIn,
       out: tokensOut,
@@ -517,6 +604,21 @@ export function createProductionDeps(): GenerateDependencies {
     },
     async reserveUsage(userId, feature, limit, tokensIn) {
       const admin = createAdminClient();
+      if (limit === 0) {
+        // Mode Unlimited / Dev: Langsung catat ke usage_log tanpa batas kuota
+        // Menjamin tidak terbentrok walau database user masih menggunakan fungsi SQL 0002 lama
+        const { data, error } = await admin
+          .from('usage_log')
+          .insert({
+            user_id: userId,
+            feature,
+            tokens_in: tokensIn,
+            tokens_out: null,
+          })
+          .select('id')
+          .single();
+        return { id: data?.id, error };
+      }
       const { data, error } = await admin.rpc('reserve_usage', {
         p_user: userId,
         p_feature: feature,
@@ -526,6 +628,7 @@ export function createProductionDeps(): GenerateDependencies {
       return { id: data, error };
     },
     async updateUsageLog(logId, tokensIn, tokensOut) {
+      if (!logId) return;
       const admin = createAdminClient();
       await admin.from('usage_log').update({ tokens_in: tokensIn, tokens_out: tokensOut }).eq('id', logId);
     },
@@ -573,7 +676,8 @@ export function createProductionDeps(): GenerateDependencies {
         onConflict: 'user_id,module_id,feature,params_hash,prompt_version',
       });
     },
-    dailyQuotaLimit: parseInt(process.env.DAILY_QUOTA_PER_USER || '30', 10),
+    dailyQuotaLimit: getDailyQuotaLimit(),
+    getUserQuotaLimit: (user: any) => getUserDailyQuotaLimit(user),
     promptVersion: process.env.PROMPT_VERSION || '1',
   };
 }

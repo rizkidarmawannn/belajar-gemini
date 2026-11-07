@@ -1,102 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
-import { z } from 'zod';
+import {
+  handleGetQuizAttempts,
+  handleSaveQuizAttempt,
+  createQuizProductionDeps,
+  MAX_QUIZ_ATTEMPT_PAYLOAD_BYTES,
+} from '@/lib/learning/quiz-handler';
 
-// GET: Ambil riwayat percobaan kuis modul ini
+export const runtime = 'nodejs';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: moduleId } = await params;
-    const supabase = await createClient();
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Harap masuk terlebih dahulu.' }, { status: 401 });
-    }
-
-    const { data: attempts, error } = await supabase
-      .from('quiz_attempts')
-      .select('*')
-      .eq('module_id', moduleId)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ attempts: attempts || [] });
+    return await handleGetQuizAttempts(createQuizProductionDeps(), moduleId);
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Gagal memuat riwayat kuis' }, { status: 500 });
   }
 }
 
-const SaveAttemptSchema = z.object({
-  score: z.number().int().min(0),
-  total: z.number().int().min(1),
-  answers: z.array(
-    z.object({
-      nomor: z.number(),
-      pertanyaan: z.string(),
-      userAnswer: z.string(),
-      kunci: z.string(),
-      isCorrect: z.boolean(),
-      penjelasan: z.string().optional(),
-    })
-  ),
-});
-
-// POST: Simpan hasil percobaan kuis baru
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: moduleId } = await params;
-    const supabase = await createClient();
-
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Harap masuk terlebih dahulu.' }, { status: 401 });
-    }
-
-    const body = await request.json();
-    const parsed = SaveAttemptSchema.safeParse(body);
-    if (!parsed.success) {
+    // Baca body sebagai teks dan tolak 413 SEBELUM JSON.parse & SEBELUM Zod
+    const rawText = await request.text();
+    if (Buffer.byteLength(rawText, 'utf-8') > MAX_QUIZ_ATTEMPT_PAYLOAD_BYTES) {
       return NextResponse.json(
-        { error: 'Format data kuis tidak valid', details: parsed.error.format() },
-        { status: 400 }
+        { error: `Ukuran isi permintaan melebihi batas maksimum (${MAX_QUIZ_ATTEMPT_PAYLOAD_BYTES / 1024} KB).` },
+        { status: 413 }
       );
     }
 
-    const { data: inserted, error } = await supabase
-      .from('quiz_attempts')
-      .insert({
-        user_id: user.id,
-        module_id: moduleId,
-        score: parsed.data.score,
-        total: parsed.data.total,
-        answers: parsed.data.answers,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    let body: any;
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      return NextResponse.json({ error: 'Format JSON permintaan tidak valid.' }, { status: 400 });
     }
 
-    return NextResponse.json({ attempt: inserted });
+    return await handleSaveQuizAttempt(createQuizProductionDeps(), moduleId, body);
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Gagal menyimpan hasil kuis' }, { status: 500 });
   }
