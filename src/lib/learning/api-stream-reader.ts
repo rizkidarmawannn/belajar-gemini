@@ -9,8 +9,8 @@ export interface UsedChapterInfo {
 }
 
 export interface UsedChaptersMode {
-  mode: 'all';
-  count: number;
+  mode: 'all' | 'external';
+  count?: number;
 }
 
 export interface ReadApiResponseOptions {
@@ -140,16 +140,16 @@ export async function readApiResponse(options: ReadApiResponseOptions): Promise<
     try {
       const decoded = decodeURIComponent(usedChaptersHeader);
       const parsed = JSON.parse(decoded);
-      if (parsed && typeof parsed === 'object' && parsed.mode === 'all') {
-        usedChaptersMode = { mode: 'all', count: Number(parsed.count) || 0 };
+      if (parsed && typeof parsed === 'object' && (parsed.mode === 'all' || parsed.mode === 'external')) {
+        usedChaptersMode = { mode: parsed.mode, count: parsed.count ? Number(parsed.count) : undefined };
       } else if (Array.isArray(parsed)) {
         usedChapters = parsed;
       }
     } catch {
       try {
         const parsed = JSON.parse(usedChaptersHeader);
-        if (parsed && typeof parsed === 'object' && parsed.mode === 'all') {
-          usedChaptersMode = { mode: 'all', count: Number(parsed.count) || 0 };
+        if (parsed && typeof parsed === 'object' && (parsed.mode === 'all' || parsed.mode === 'external')) {
+          usedChaptersMode = { mode: parsed.mode, count: parsed.count ? Number(parsed.count) : undefined };
         } else if (Array.isArray(parsed)) {
           usedChapters = parsed;
         }
@@ -177,7 +177,7 @@ export async function readApiResponse(options: ReadApiResponseOptions): Promise<
       isStream: false,
       isCached: Boolean(json.cached || isCached),
       usedChapters: Array.isArray(jsonUsed) ? jsonUsed : usedChapters,
-      usedChaptersMode: (jsonUsed && jsonUsed.mode === 'all') ? jsonUsed : usedChaptersMode,
+      usedChaptersMode: (jsonUsed && (jsonUsed.mode === 'all' || jsonUsed.mode === 'external')) ? jsonUsed : usedChaptersMode,
       rawJson: json,
     };
   }

@@ -187,8 +187,8 @@ test('QA Handler: (c) Cache hit pada mode stream tetap membawa header X-Used-Cha
   assert.deepEqual(decoded, { mode: 'all', count: 2 });
 });
 
-// ---------------------- TEST D: Modul Besar Tanpa Kata Kunci Cocok (Tolak 400 Ramah Sebelum Kuota) ----------------------
-test('QA Handler: (d) Modul besar + pertanyaan tanpa kecocokan kata kunci -> tolak dengan 400 dan pesan panduan ramah sebelum reserve_usage', async () => {
+// ---------------------- TEST D: Modul Besar Tanpa Kata Kunci Cocok -> Fallback ke Pengetahuan Umum / Referensi Luar ----------------------
+test('QA Handler: (d) Modul besar + pertanyaan di luar modul -> AI tetap menjawab via pengetahuan umum dengan header X-Used-Chapters mode: external', async () => {
   const bigChunks = [
     { position: 1, chapter_title: 'Bab I Komitmen', content: 'Kebijakan K3 '.repeat(2000) }, // ~26.000 chars
     { position: 2, chapter_title: 'Bab II Perencanaan', content: 'Identifikasi bahaya '.repeat(2000) }, // ~38.000 chars -> Total > 64k
@@ -211,16 +211,22 @@ test('QA Handler: (d) Modul besar + pertanyaan tanpa kecocokan kata kunci -> tol
     feature: 'qa',
     stream: true,
     params: {
-      question: 'xyzqwerty takdikenal di luar modul sama sekali',
+      question: 'apa hukum newton tentang gravitasi',
     },
   });
 
-  // Wajib ditolak dengan status 400 dan pesan jelas
-  assert.equal(res.status, 400);
-  const json = await res.json();
-  assert.match(json.error, /tidak memiliki kecocokan kata kunci/i);
-  assert.match(json.error, /pilih bab spesifik secara manual/i);
+  // Wajib berhasil dengan status 200 (tidak ditolak)
+  assert.equal(res.status, 200);
+  assert.equal(reserveCalled, true, 'reserveUsage wajib dipanggil karena AI memproses jawaban');
 
-  // Penolakan 400 HARUS terjadi sebelum reserve_usage dipanggil, kuota pengguna tidak boleh berkurang
-  assert.equal(reserveCalled, false, 'reserveUsage TIDAK boleh dipanggil saat QA ditolak karena tidak ada bab cocok');
+  // Header X-Used-Chapters harus mengindikasikan mode: 'external'
+  const rawHeader = res.headers.get('X-Used-Chapters');
+  assert.ok(rawHeader, 'Header X-Used-Chapters wajib ada');
+  const decodedMode = JSON.parse(decodeURIComponent(rawHeader));
+  assert.deepEqual(decodedMode, { mode: 'external' });
+
+  // Teks modul yang dikirim ke Gemini memuat daftar bab modul dan instruksi fallback
+  const captured = deps._getCapturedVariables();
+  assert.ok(captured.modul.includes('Bab 1: Bab I Komitmen'));
+  assert.ok(captured.modul.includes('pengetahuan umum'));
 });

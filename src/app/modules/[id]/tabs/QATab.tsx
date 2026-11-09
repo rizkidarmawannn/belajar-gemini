@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 
-import { readApiResponse, formatFriendlyErrorMessage, cleanDisplayText, type UsedChapterInfo } from '@/lib/learning/api-stream-reader';
+import { readApiResponse, formatFriendlyErrorMessage, cleanDisplayText, type UsedChapterInfo, type UsedChaptersMode } from '@/lib/learning/api-stream-reader';
 
 interface Chunk {
   id: string;
@@ -25,7 +25,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
   const [question, setQuestion] = useState('');
   const [qaAnswer, setQaAnswer] = useState('');
   const [usedChapters, setUsedChapters] = useState<UsedChapterInfo[]>([]);
-  const [usedChaptersMode, setUsedChaptersMode] = useState<{ mode: 'all'; count: number } | null>(null);
+  const [usedChaptersMode, setUsedChaptersMode] = useState<UsedChaptersMode | null>(null);
   const [isAsking, setIsAsking] = useState(false);
   const [qaCopied, setQaCopied] = useState(false);
 
@@ -60,7 +60,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
       });
 
       setQaAnswer(res.text);
-      if (res.usedChaptersMode?.mode === 'all') {
+      if (res.usedChaptersMode) {
         setUsedChaptersMode(res.usedChaptersMode);
         setUsedChapters([]);
       } else if (res.usedChapters && res.usedChapters.length > 0) {
@@ -97,7 +97,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
           <span>Tanya Jawab tentang Isi Modul</span>
         </h2>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Tanyakan apa saja seputar topik, pengertian, contoh penerapan, atau rincian modul ini. AI akan merespons sebagai tutor cerdas berdasar isi dokumen.
+          Tanyakan apa saja seputar topik, contoh penerapan, atau rincian materi. AI akan mengutamakan isi modul dan melengkapi dengan literatur terpercaya beserta sumber referensinya bila topik berada di luar modul.
         </p>
 
         <form onSubmit={handleAskQuestion} className="space-y-4 pt-2">
@@ -131,7 +131,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
               required
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Contoh: apa contoh smk3, apa 5 prinsip dasarnya, atau siapa penulis karya tulis ini?"
+              placeholder="Contoh: apa contoh smk3, apa rumus gaya gravitasi, atau topik lain yang ingin ditanyakan..."
               className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
             />
           </div>
@@ -183,20 +183,42 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
             )}
           </div>
 
-          {!isAsking && (usedChaptersMode?.mode === 'all' || usedChapters.length > 0) && (
-            <div className="flex flex-wrap items-center gap-1.5 text-xs text-indigo-700 dark:text-indigo-300 bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/40 px-3 py-1.5 rounded-xl">
-              <span className="font-semibold">Dijawab dari:</span>
-              {usedChaptersMode?.mode === 'all' ? (
-                <span className="font-medium">Seluruh Modul ({usedChaptersMode.count} Bab)</span>
-              ) : (
-                usedChapters.map((ch, idx) => (
-                  <span key={ch.position} className="font-medium">
-                    Bab {ch.position} ({ch.chapter_title}){idx < usedChapters.length - 1 ? ', ' : ''}
+          {!isAsking && qaAnswer && (() => {
+            const isExternal =
+              usedChaptersMode?.mode === 'external' ||
+              qaAnswer.includes('Referensi Umum') ||
+              qaAnswer.includes('Referensi Eksternal') ||
+              qaAnswer.includes('di luar materi modul') ||
+              qaAnswer.includes('tidak tercantum secara spesifik di modul');
+
+            return (
+              <div
+                className={`flex flex-wrap items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl border ${
+                  isExternal
+                    ? 'text-amber-800 dark:text-amber-300 bg-amber-50/80 dark:bg-amber-950/40 border-amber-200/80 dark:border-amber-900/40'
+                    : 'text-indigo-700 dark:text-indigo-300 bg-indigo-50/80 dark:bg-indigo-950/40 border-indigo-100 dark:border-indigo-900/40'
+                }`}
+              >
+                <span className="font-semibold">Dijawab dari:</span>
+                {isExternal ? (
+                  <span className="font-medium flex items-center gap-1">
+                    <span>🌐</span>
+                    <span>Referensi Eksternal / Pengetahuan Umum (Topik di luar modul)</span>
                   </span>
-                ))
-              )}
-            </div>
-          )}
+                ) : usedChaptersMode?.mode === 'all' ? (
+                  <span className="font-medium">Seluruh Modul ({usedChaptersMode.count} Bab)</span>
+                ) : usedChapters.length > 0 ? (
+                  usedChapters.map((ch, idx) => (
+                    <span key={ch.position} className="font-medium">
+                      Bab {ch.position} ({ch.chapter_title}){idx < usedChapters.length - 1 ? ', ' : ''}
+                    </span>
+                  ))
+                ) : (
+                  <span className="font-medium">Modul Belajar</span>
+                )}
+              </div>
+            );
+          })()}
 
           <div className="text-slate-800 dark:text-slate-200 text-sm leading-relaxed space-y-3">
             {isAsking && !qaAnswer && (

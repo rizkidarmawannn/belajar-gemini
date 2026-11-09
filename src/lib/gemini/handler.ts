@@ -243,22 +243,18 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             maxChars: 45000,
           });
 
-          // PENTING: Ditolak 400 SEBELUM reserve_usage dipanggil sehingga kuota pengguna TIDAK terpotong!
+          // Jika tidak ada bab cocok di modul besar: izinkan AI fallback ke pengetahuan umum
           if (!selection.hasMatch || selection.selectedChunks.length === 0) {
-            return Response.json(
-              {
-                error:
-                  'Pertanyaan tidak memiliki kecocokan kata kunci langsung dengan bab tertentu pada modul besar ini. Silakan pilih bab spesifik secara manual melalui menu di atas agar jawaban AI akurat.',
-              },
-              { status: 400 }
-            );
+            const chapterList = chunksData.map((c: any) => `- Bab ${c.position}: ${c.chapter_title}`).join('\n');
+            moduleContent = `Daftar Bab dalam Dokumen Modul:\n${chapterList}\n\n(Catatan: Pertanyaan pengguna tidak memiliki kecocokan materi di bab-bab di atas. Jawablah menggunakan literatur/pengetahuan umum yang kredibel dan cantumkan sumber referensinya sesuai aturan prompt.)`;
+            usedChaptersPayload = { mode: 'external' };
+          } else {
+            // Untuk bab terpilih: kirim maksimal 5 bab
+            usedChaptersPayload = selection.usedChapters.slice(0, 5);
+            moduleContent = selection.selectedChunks
+              .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+              .join('\n\n---\n\n');
           }
-
-          // Untuk bab terpilih: kirim maksimal 5 bab
-          usedChaptersPayload = selection.usedChapters.slice(0, 5);
-          moduleContent = selection.selectedChunks
-            .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
-            .join('\n\n---\n\n');
         }
       }
     } else {
@@ -588,7 +584,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           },
           totalDeadlineMs: 48000,
         });
-        resultData = { answer: gen.data };
+        resultData = { answer: gen.data, ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}) };
         tokensIn = gen.tokensIn;
         tokensOut = gen.tokensOut;
         break;
@@ -772,6 +768,6 @@ export function createProductionDeps(): GenerateDependencies {
     },
     dailyQuotaLimit: getDailyQuotaLimit(),
     getUserQuotaLimit: (user: any) => getUserDailyQuotaLimit(user),
-    promptVersion: process.env.PROMPT_VERSION || '1',
+    promptVersion: process.env.PROMPT_VERSION || '4',
   };
 }
