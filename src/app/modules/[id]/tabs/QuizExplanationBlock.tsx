@@ -37,6 +37,7 @@ export interface DeepExplainEntry {
 interface QuizExplanationBlockProps {
   item: QuizExplanationData;
   deepCache: Record<string, DeepExplainEntry>;
+  streamingCache?: Record<string, string>;
   onRequestDeepExplain: (item: QuizExplanationData, mode: ExplanationMode) => Promise<void>;
   loadingKey: string | null;
   errorByQuestion: Record<string, string>;
@@ -92,6 +93,7 @@ function ModeIcon({ mode, className = 'w-3.5 h-3.5' }: { mode: ExplanationMode; 
 export default function QuizExplanationBlock({
   item,
   deepCache,
+  streamingCache = {},
   onRequestDeepExplain,
   loadingKey,
   errorByQuestion,
@@ -115,9 +117,12 @@ export default function QuizExplanationBlock({
   const qErrorKey = buildQuestionErrorKey(item.pertanyaan, item.userAnswer);
   const inlineError = errorByQuestion[qErrorKey];
 
-  const activeEntry = activeDeepMode
-    ? deepCache[buildDeepExplainKey(item.pertanyaan, item.userAnswer, activeDeepMode)]
-    : undefined;
+  const activeKey = activeDeepMode
+    ? buildDeepExplainKey(item.pertanyaan, item.userAnswer, activeDeepMode)
+    : null;
+  const activeEntry = activeKey ? deepCache[activeKey] : undefined;
+  const activeStreamingText = activeKey ? streamingCache[activeKey] || '' : '';
+  const isActiveStreamingLoading = Boolean(activeKey && loadingKey === activeKey);
 
   const isAnyModeLoadingForThisQuestion = (['modul', 'luar_modul', 'keduanya'] as ExplanationMode[]).some(
     (m) => loadingKey === buildDeepExplainKey(item.pertanyaan, item.userAnswer, m)
@@ -273,20 +278,38 @@ export default function QuizExplanationBlock({
             })}
           </div>
 
-          {activeDeepMode &&
-            loadingKey === buildDeepExplainKey(item.pertanyaan, item.userAnswer, activeDeepMode) && (
-              <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/50 text-xs text-indigo-800 dark:text-indigo-200 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
-                <span>
-                  Sedang menyusun penjelasan lanjutan ({MODE_META[activeDeepMode].label})...
-                </span>
-              </div>
-            )}
+          {activeDeepMode && isActiveStreamingLoading && !activeStreamingText.trim() && (
+            <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/50 text-xs text-indigo-800 dark:text-indigo-200 flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+              <span>
+                Sedang menyusun penjelasan lanjutan ({MODE_META[activeDeepMode].label})...
+              </span>
+            </div>
+          )}
 
           {inlineError && (
             <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <span>{inlineError}</span>
+            </div>
+          )}
+
+          {activeDeepMode && !activeEntry && activeStreamingText.trim().length > 0 && (
+            <div className="rounded-xl border border-indigo-200/70 dark:border-indigo-800/60 bg-slate-50/80 dark:bg-slate-900/80 p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200/80 dark:border-slate-800">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600 dark:text-indigo-400" />
+                  <span>Menulis Penjelasan Lanjutan: {MODE_META[activeDeepMode].label}</span>
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${MODE_META[activeDeepMode].badgeClass}`}
+                >
+                  <ModeIcon mode={activeDeepMode} className="w-3 h-3" />
+                  <span>{MODE_META[activeDeepMode].label}</span>
+                </span>
+              </div>
+
+              <FormattedContent content={activeStreamingText} className="text-xs" />
             </div>
           )}
 

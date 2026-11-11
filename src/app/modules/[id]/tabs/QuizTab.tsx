@@ -14,7 +14,7 @@ import {
   Globe,
   Layers,
 } from 'lucide-react';
-import { formatFriendlyErrorMessage } from '@/lib/learning/api-stream-reader';
+import { formatFriendlyErrorMessage, readApiResponse } from '@/lib/learning/api-stream-reader';
 import QuizExplanationBlock, {
   type ExplanationMode,
   type QuizExplanationData,
@@ -92,6 +92,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
 
   // Cache lokal & status loading untuk pendalaman penjelasan soal ("Minta Penjelasan Lagi")
   const [deepExplanations, setDeepExplanations] = useState<Record<string, DeepExplainEntry>>({});
+  const [streamingDeepText, setStreamingDeepText] = useState<Record<string, string>>({});
   const [loadingDeepKey, setLoadingDeepKey] = useState<string | null>(null);
   const [deepErrors, setDeepErrors] = useState<Record<string, string>>({});
 
@@ -200,6 +201,11 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       delete next[qErrorKey];
       return next;
     });
+    setStreamingDeepText((prev) => {
+      const next = { ...prev };
+      delete next[cacheKey];
+      return next;
+    });
     setLoadingDeepKey(cacheKey);
 
     try {
@@ -213,6 +219,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         body: JSON.stringify({
           moduleId,
           feature: 'quiz_explain',
+          stream: true,
           params: {
             question: item.pertanyaan.trim().slice(0, 990),
             quizOptions: {
@@ -237,20 +244,18 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         }),
       });
 
-      if (!response.ok) {
-        let errorMsg = 'Gagal mengambil penjelasan lanjutan.';
-        try {
-          const errJson = await response.json();
-          errorMsg = errJson.error || errorMsg;
-        } catch {
-          errorMsg = `Server merespons status ${response.status}.`;
-        }
-        throw new Error(errorMsg);
-      }
+      const streamResult = await readApiResponse({
+        response,
+        onChunk: (accumulatedText) => {
+          setStreamingDeepText((prev) => ({
+            ...prev,
+            [cacheKey]: accumulatedText,
+          }));
+        },
+      });
 
-      const json = await response.json();
-      const markdown = json?.result?.markdown;
-      if (!markdown || typeof markdown !== 'string') {
+      const markdown = (streamResult.text || '').trim();
+      if (!markdown) {
         throw new Error('Respons penjelasan lanjutan kosong.');
       }
 
@@ -259,7 +264,8 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         [cacheKey]: {
           markdown,
           mode,
-          usedChapters: json?.usedChapters || json?.result?.usedChapters,
+          usedChapters:
+            streamResult.usedChapters || streamResult.rawJson?.result?.usedChapters,
         },
       }));
     } catch (err: any) {
@@ -271,6 +277,12 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         }));
       }
     } finally {
+      setStreamingDeepText((prev) => {
+        if (!(cacheKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[cacheKey];
+        return next;
+      });
       setLoadingDeepKey((prev) => (prev === cacheKey ? null : prev));
     }
   };
@@ -607,6 +619,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
                   bab: currentQ.bab,
                 }}
                 deepCache={deepExplanations}
+                streamingCache={streamingDeepText}
                 onRequestDeepExplain={handleRequestDeepExplain}
                 loadingKey={loadingDeepKey}
                 errorByQuestion={deepErrors}
@@ -715,6 +728,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
                   key={`review-${idx}-${a.nomor}-${a.pertanyaan}`}
                   item={a}
                   deepCache={deepExplanations}
+                  streamingCache={streamingDeepText}
                   onRequestDeepExplain={handleRequestDeepExplain}
                   loadingKey={loadingDeepKey}
                   errorByQuestion={deepErrors}

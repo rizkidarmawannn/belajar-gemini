@@ -157,20 +157,36 @@ export function cleanAndParseJson(rawText: string): any {
   }
 }
 
+export type QuizDifficultyOption = 'mudah' | 'sedang' | 'sulit' | 'campuran';
+
 /**
  * Validasi dan kurasi butir soal kuis:
  * - Memastikan opsi A, B, C, D tidak ada yang kembar/duplikat teks
  * - Membuang pertanyaan duplikat
  * - Memastikan kunci valid
+ * - Memfilter tingkat kesulitan bila diminta spesifik ('mudah' | 'sedang' | 'sulit')
  * - Menomori ulang soal secara terurut
  */
-export function validateAndSanitizeQuiz(raw: unknown): QuizData {
+export function validateAndSanitizeQuiz(
+  raw: unknown,
+  expectedDifficulty?: QuizDifficultyOption
+): QuizData {
   const parsed = QuizSchema.parse(raw);
 
   const seenQuestions = new Set<string>();
   const validSoal: QuizItem[] = [];
+  const normalizedTargetDifficulty =
+    expectedDifficulty && expectedDifficulty !== 'campuran'
+      ? expectedDifficulty.trim().toLowerCase()
+      : null;
 
   for (const item of parsed.soal) {
+    // Jika pengguna memilih tingkat spesifik (mudah/sedang/sulit), buang soal dari tingkat lain
+    const itemDifficulty = (item.tingkat || 'sedang').trim().toLowerCase();
+    if (normalizedTargetDifficulty && itemDifficulty !== normalizedTargetDifficulty) {
+      continue;
+    }
+
     // Normalisasi teks pertanyaan untuk deteksi duplikasi
     const qNorm = item.pertanyaan.trim().toLowerCase();
     if (seenQuestions.has(qNorm)) {
@@ -210,6 +226,11 @@ export function validateAndSanitizeQuiz(raw: unknown): QuizData {
   }
 
   if (validSoal.length === 0) {
+    if (normalizedTargetDifficulty) {
+      throw new Error(
+        `Tidak ada soal kuis yang memenuhi kriteria tingkat kesulitan "${normalizedTargetDifficulty}" setelah proses kurasi.`
+      );
+    }
     throw new Error('Tidak ada soal kuis yang memenuhi kriteria kualitas setelah proses kurasi.');
   }
 

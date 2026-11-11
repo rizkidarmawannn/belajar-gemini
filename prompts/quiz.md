@@ -1,16 +1,31 @@
-TUGAS: Buat {{jumlah}} soal pilihan ganda dari modul.
+TUGAS: Buat {{jumlah}} soal pilihan ganda dari modul sesuai tingkat kesulitan yang diminta.
 
 PARAMETER
 - Tingkat kesulitan: {{tingkat}}       (mudah | sedang | sulit | campuran)
 - Bab yang dicakup: {{bab}}            (semua | nama bab tertentu)
 - Mode penjelasan: {{mode_penjelasan}} (modul | luar_modul | keduanya)
 
+ATURAN KERAS TINGKAT KESULITAN ({{tingkat}})
+- Jika `{{tingkat}}` adalah `mudah`, `sedang`, atau `sulit` (BUKAN `campuran`):
+  * SELURUH (100%) dari {{jumlah}} soal WAJIB memiliki `"tingkat": "{{tingkat}}"`.
+  * DILARANG KERAS mencampurkan soal dari tingkat lain (misalnya bila `{{tingkat}} = sulit`, DILARANG membuat soal `mudah` atau `sedang`).
+- Hanya jika `{{tingkat}}` = `campuran`: bagilah proporsional antara `mudah`, `sedang`, dan `sulit`.
+
+KRITERIA BOBOT KOGNITIF TIAP TINGKAT
+- `"sulit"` (Analisis Kasus & HOTS):
+  * WAJIB berbentuk skenario nyata/studi kasus, analisis sebab-akibat multi-konsep, pemecahan masalah terapan, atau evaluasi syarat/pengecualian dalam modul.
+  * DILARANG membuat soal hafalan dangkal seperti "Apa definisi...", "Apa kepanjangan...", atau sekadar mencocokkan istilah sederhana bila diminta tingkat `sulit`.
+  * Keempat opsi (A–D) harus konseptual dan menuntut analisis teliti, bukan tebakan permukaan.
+- `"sedang"` (Pemahaman & Perbandingan):
+  * Menguji pemahaman hubungan antarkonsep, perbedaan fungsi/langkah, atau interpretasi ketentuan dalam modul.
+- `"mudah"` (Ingatan & Konsep Dasar):
+  * Menguji definisi dasar, istilah pokok, atau identifikasi fakta yang tertulis langsung di modul.
+
 ATURAN KUALITAS SOAL
 - 4 opsi per soal (A, B, C, D), tepat SATU jawaban benar.
 - Pengecoh (distraktor) harus masuk akal, sejenis, dan panjangnya mirip jawaban benar.
 - Dilarang memakai opsi "semua jawaban benar" atau "tidak ada yang benar".
 - Posisi jawaban benar harus tersebar acak.
-- Soal "mudah": ingatan/definisi. "sedang": pemahaman/perbandingan. "sulit": penerapan atau analisis kasus.
 - Pertanyaan, seluruh opsi jawaban, kunci jawaban, dan nama bab sumber wajib berasal HANYA dari isi modul.
 
 ATURAN PENJELASAN SESUAI MODE ({{mode_penjelasan}})
@@ -27,7 +42,8 @@ ATURAN PENJELASAN SESUAI MODE ({{mode_penjelasan}})
   * Isi `penjelasan` dengan ringkasan padat 1–2 kalimat yang merangkum inti kunci jawaban.
   * Set `sumber_penjelasan` = `"keduanya"`.
 
-FORMAT OUTPUT: JSON valid saja, tanpa teks lain:
+FORMAT OUTPUT: JSON valid saja, tanpa teks lain.
+Pastikan nilai field `"tingkat"` pada SETIAP objek soal persis `"{{tingkat}}"` jika parameter bukan `"campuran"` (jika `"campuran"`, gunakan `"mudah"`, `"sedang"`, atau `"sulit"` sesuai soalnya):
 {
   "soal": [
     {
@@ -40,7 +56,7 @@ FORMAT OUTPUT: JSON valid saja, tanpa teks lain:
       "penjelasan_luar": "...",
       "sumber_penjelasan": "modul",
       "bab": "...",
-      "tingkat": "sedang"
+      "tingkat": "sulit"
     }
   ]
 }
@@ -48,3 +64,5 @@ FORMAT OUTPUT: JSON valid saja, tanpa teks lain:
 <modul>
 {{modul}}
 </modul>
+
+PENGINGAT AKHIR: Parameter tingkat kesulitan yang diminta adalah "{{tingkat}}". Bila bukan "campuran", pastikan SEMUA {{jumlah}} soal bertingkat "{{tingkat}}" dan berjenis kognitif sesuai kriteria "{{tingkat}}".

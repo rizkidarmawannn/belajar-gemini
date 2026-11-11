@@ -117,12 +117,15 @@ export async function readApiResponse(options: ReadApiResponseOptions): Promise<
   }
 
   if (!response.ok) {
-    let errorMsg = 'Permintaan gagal diproses oleh server.';
+    let errorMsg =
+      response.status === 504 || response.status === 502
+        ? 'Waktu server habis (504 Gateway Timeout). Silakan coba lagi sesaat lagi.'
+        : `Server merespons status ${response.status}.`;
     try {
       const errJson = await response.json();
       errorMsg = errJson.error || errorMsg;
     } catch {
-      // bukan JSON error
+      // bukan JSON error (misal HTML 502/504 dari gateway)
     }
     throw new Error(errorMsg);
   }

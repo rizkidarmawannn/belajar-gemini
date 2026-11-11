@@ -401,3 +401,226 @@ test('Quiz Attempts POST: payload jawaban terpotong aman tetap lolos validasi An
   assert.equal(res.status, 200);
   assert.equal(savedRows.length, 1);
 });
+
+test('validateAndSanitizeQuiz: memfilter ketat tingkat kesulitan spesifik (sulit/sedang/mudah) dan mempertahankan semua untuk campuran', () => {
+  const mixedQuiz = {
+    soal: [
+      {
+        nomor: 1,
+        pertanyaan: 'Apa definisi dari Eliminasi bahaya?',
+        opsi: { A: 'Menghilangkan bahaya', B: 'Mengganti bahan', C: 'Memasang rambu', D: 'Memakai masker' },
+        kunci: 'A',
+        penjelasan: 'Definisi dasar eliminasi.',
+        bab: 'Bab 2',
+        tingkat: 'mudah',
+      },
+      {
+        nomor: 2,
+        pertanyaan: 'Apa perbedaan utama antara Substitusi dan Rekayasa Teknik?',
+        opsi: { A: 'Bahan vs desain alat', B: 'Masker vs rambu', C: 'Audit vs patroli', D: 'Sanksi vs pelatihan' },
+        kunci: 'A',
+        penjelasan: 'Perbandingan konsep.',
+        bab: 'Bab 2',
+        tingkat: 'sedang',
+      },
+      {
+        nomor: 3,
+        pertanyaan: 'Sebuah pabrik mendapati kebocoran uap pelarut toksik saat pembersihan mesin meski ventilasi lokal aktif dan pekerja memakai respirator. Tindakan hierarki tertinggi apa yang harus dievaluasi ulang terlebih dahulu?',
+        opsi: {
+          A: 'Menghilangkan proses atau mengganti pelarut toksik dengan bahan non-toksik',
+          B: 'Mengganti jadwal kerja menjadi shift pendek',
+          C: 'Menambah rambu bahaya bahan kimia',
+          D: 'Mewajibkan masker dua lapis bagi operator',
+        },
+        kunci: 'A',
+        penjelasan: 'Eliminasi/substitusi berada di puncak hierarki sebelum kontrol administratif dan APD.',
+        bab: 'Bab 2',
+        tingkat: 'sulit',
+      },
+    ],
+  };
+
+  // Mode 'sulit' wajib menyaring keluar soal 'mudah' dan 'sedang'
+  const onlyHard = validateAndSanitizeQuiz(mixedQuiz, 'sulit');
+  assert.equal(onlyHard.soal.length, 1);
+  assert.equal(onlyHard.soal[0].tingkat, 'sulit');
+  assert.equal(onlyHard.soal[0].nomor, 1);
+
+  // Mode 'mudah' wajib hanya menyisakan 'mudah'
+  const onlyEasy = validateAndSanitizeQuiz(mixedQuiz, 'mudah');
+  assert.equal(onlyEasy.soal.length, 1);
+  assert.equal(onlyEasy.soal[0].tingkat, 'mudah');
+
+  // Mode 'campuran' menyimpan semuanya
+  const allMixed = validateAndSanitizeQuiz(mixedQuiz, 'campuran');
+  assert.equal(allMixed.soal.length, 3);
+
+  // Bila permintaan 'sulit' tapi seluruh hasil hanya 'mudah'/'sedang' -> lempar error agar memicu retry
+  const noHardQuiz = { soal: mixedQuiz.soal.slice(0, 2) };
+  assert.throws(
+    () => validateAndSanitizeQuiz(noHardQuiz, 'sulit'),
+    /tingkat kesulitan "sulit"/
+  );
+});
+
+test('handleGenerate quiz: memaksa validator menyaring soal sesuai difficulty sulit dan merender aturan HOTS pada prompt', async () => {
+  const renderedHard = renderPrompt('quiz', {
+    jumlah: 5,
+    tingkat: 'sulit',
+    bab: 'semua',
+    mode_penjelasan: 'modul',
+    modul: 'Materi studi kasus K3.',
+  });
+  assert.ok(renderedHard.promptText.includes('DILARANG KERAS mencampurkan soal dari tingkat lain'));
+  assert.ok(renderedHard.promptText.includes('Analisis Kasus & HOTS'));
+
+  // Simulasikan LLM bandel mengembalikan campuran mudah + sedang + sulit padahal diminta 'sulit'
+  const deps = createQuizExplainMockDeps({
+    async callGeminiJson(opts, validator) {
+      const rawMixed = {
+        soal: [
+          {
+            nomor: 1,
+            pertanyaan: 'Soal mudah yang seharusnya terbuang?',
+            opsi: { A: 'Satu', B: 'Dua', C: 'Tiga', D: 'Empat' },
+            kunci: 'A',
+            penjelasan: 'Penjelasan mudah.',
+            bab: 'Bab 1',
+            tingkat: 'mudah',
+          },
+          {
+            nomor: 2,
+            pertanyaan: 'Soal sedang yang seharusnya terbuang?',
+            opsi: { A: 'Satu', B: 'Dua', C: 'Tiga', D: 'Empat' },
+            kunci: 'B',
+            penjelasan: 'Penjelasan sedang.',
+            bab: 'Bab 1',
+            tingkat: 'sedang',
+          },
+          {
+            nomor: 3,
+            pertanyaan: 'Kasus analisis risiko kompleks pada kondisi darurat di fasilitas kimia?',
+            opsi: { A: 'Isolasi sumber & evakuasi terstruktur', B: 'Diam di tempat', C: 'Abaikan alarm', D: 'Tunda laporan' },
+            kunci: 'A',
+            penjelasan: 'Analisis kondisi darurat menuntut pengendalian sumber terlebih dahulu.',
+            bab: 'Bab 2',
+            tingkat: 'sulit',
+          },
+        ],
+      };
+
+      const validated = validator(rawMixed);
+      return { data: validated, tokensIn: 100, tokensOut: 90 };
+    },
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: { count: 5, difficulty: 'sulit', explanationMode: 'modul' },
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.result.soal.length, 1);
+  assert.equal(json.result.soal[0].tingkat, 'sulit');
+});
+
+test('handleGenerate quiz_explain stream: menyajikan stream MISS lalu cache HIT serta memotong bab besar terfokus bebas 504', async () => {
+  let streamCalls = 0;
+  let lastStreamOpts = null;
+
+  const fillerBefore = 'Pengantar umum prosedur keselamatan kerja di lingkungan industri. '.repeat(190); // ~12.350 karakter
+  const targetParagraph =
+    '\n\nProsedur Lockout/Tagout (LOTO) wajib diterapkan sebelum teknisi membuka panel tegangan menengah agar sumber energi terisolasi penuh.\n\n';
+  const fillerAfter = 'Catatan administratif lanjutan mengenai pengarsipan dokumen audit tahunan. '.repeat(180);
+
+  const deps = createQuizExplainMockDeps({
+    async getModuleChunks() {
+      return {
+        data: [
+          {
+            position: 1,
+            chapter_title: 'Bab 1 Isolasi Energi LOTO',
+            content: `${fillerBefore}${targetParagraph}${fillerAfter}`,
+          },
+        ],
+        error: null,
+      };
+    },
+    async callGeminiStream(opts, callbacks) {
+      streamCalls++;
+      lastStreamOpts = opts;
+      const rendered = renderPrompt(opts.promptName, opts.variables);
+      assert.ok(rendered.promptText.length > 0);
+      const fullMarkdown = '### Pembahasan Modul\n\nLOTO memastikan sumber energi terisolasi sebelum panel dibuka.';
+
+      const encoder = new TextEncoder();
+      return new ReadableStream({
+        async start(controller) {
+          controller.enqueue(encoder.encode('### Pembahasan Modul\n\n'));
+          controller.enqueue(encoder.encode('LOTO memastikan sumber energi terisolasi sebelum panel dibuka.'));
+          await callbacks.onBeforeClose(fullMarkdown, 140, 95);
+          controller.close();
+        },
+      });
+    },
+  });
+
+  const payload = {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz_explain',
+    stream: true,
+    params: {
+      question: 'Mengapa prosedur Lockout Tagout LOTO wajib dilakukan sebelum membuka panel tegangan menengah?',
+      quizOptions: {
+        A: 'Mengisolasi sumber energi agar aman',
+        B: 'Menghemat pemakaian listrik pabrik',
+        C: 'Mempercepat penggantian lampu biasa',
+        D: 'Mengurangi jumlah teknisi piket',
+      },
+      correctOption: 'A',
+      selectedOption: 'A',
+      chapterName: 'Bab 1 Isolasi Energi LOTO',
+      explanationMode: 'modul',
+    },
+  };
+
+  // 1. Panggilan pertama -> MISS (stream)
+  const res1 = await handleGenerate(deps, payload);
+  assert.equal(res1.status, 200);
+  assert.ok((res1.headers.get('content-type') || '').includes('text/plain'));
+  assert.equal(res1.headers.get('x-cache'), 'MISS');
+
+  const usedHeaderRaw = res1.headers.get('x-used-chapters');
+  assert.ok(usedHeaderRaw);
+  const usedChapters = JSON.parse(decodeURIComponent(usedHeaderRaw));
+  assert.equal(usedChapters[0].chapter_title, 'Bab 1 Isolasi Energi LOTO');
+
+  const text1 = await res1.text();
+  assert.ok(text1.includes('LOTO memastikan sumber energi terisolasi'));
+  assert.equal(streamCalls, 1);
+  assert.equal(lastStreamOpts.promptName, 'quiz-explain');
+  assert.ok(lastStreamOpts.variables.modul.length <= 7650);
+  assert.ok(lastStreamOpts.variables.modul.includes('Lockout/Tagout (LOTO)'));
+
+  // 2. Panggilan kedua identik -> HIT dari cache generations
+  const res2 = await handleGenerate(deps, payload);
+  assert.equal(res2.status, 200);
+  assert.equal(res2.headers.get('x-cache'), 'HIT');
+  const text2 = await res2.text();
+  assert.equal(text2, text1);
+  assert.equal(streamCalls, 1);
+
+  // 3. Mode luar_modul memakai anggaran modul jauh lebih ringkas (<= 2200 karakter + judul bab)
+  const res3 = await handleGenerate(deps, {
+    ...payload,
+    params: {
+      ...payload.params,
+      explanationMode: 'luar_modul',
+    },
+  });
+  assert.equal(res3.status, 200);
+  await res3.text();
+  assert.equal(streamCalls, 2);
+  assert.ok(lastStreamOpts.variables.modul.length <= 2350);
+});

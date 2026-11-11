@@ -17,6 +17,71 @@ import { getDailyQuotaLimit, getUserDailyQuotaLimit } from '../quota.ts';
 // Konstanta batas ukuran materi untuk fitur QA seluruh modul (60.000 karakter / ~15.000 token)
 export const QA_FULL_MODULE_CHAR_LIMIT = 60000;
 
+// Helper merangkai jendela cuplikan modul terfokus agar pendalaman 1 soal tetap cepat (< 8.000 karakter)
+function extractFocusedExcerpt(text: string, query: string, maxChars: number): string {
+  if (!text || text.length <= maxChars) return text || '';
+  const keywords = query
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4);
+
+  const lower = text.toLowerCase();
+  let hitIdx = -1;
+  for (const kw of keywords) {
+    const idx = lower.indexOf(kw);
+    if (idx !== -1) {
+      hitIdx = idx;
+      break;
+    }
+  }
+
+  if (hitIdx === -1) {
+    return text.slice(0, maxChars);
+  }
+
+  const start = Math.max(0, hitIdx - Math.floor(maxChars * 0.35));
+  const end = Math.min(text.length, start + maxChars);
+  return text.slice(start, end);
+}
+
+// Helper validasi dan penyusunan variabel prompt untuk pendalaman 1 butir soal kuis
+function buildQuizExplainPayload(
+  params: z.infer<typeof StrictParamsSchema>,
+  moduleContent: string
+): {
+  isValid: boolean;
+  expMode: 'modul' | 'luar_modul' | 'keduanya';
+  isCorrect: boolean;
+  variables: Record<string, any>;
+} {
+  const { question, quizOptions, correctOption, selectedOption, chapterName, explanationMode } = params;
+  const expMode = explanationMode || 'keduanya';
+  if (!question || !question.trim() || !quizOptions || !correctOption || !selectedOption) {
+    return { isValid: false, expMode, isCorrect: false, variables: {} };
+  }
+
+  const opsiText = (['A', 'B', 'C', 'D'] as const)
+    .map((key) => `- **${key}.** ${quizOptions[key]}`)
+    .join('\n');
+
+  return {
+    isValid: true,
+    expMode,
+    isCorrect: selectedOption === correctOption,
+    variables: {
+      pertanyaan: question.trim(),
+      opsi: opsiText,
+      kunci: `${correctOption} (${quizOptions[correctOption]})`,
+      jawaban_pengguna: `${selectedOption} (${quizOptions[selectedOption]})`,
+      status_jawaban: selectedOption === correctOption ? 'BENAR' : 'SALAH',
+      bab: chapterName || 'Umum',
+      mode_penjelasan: expMode,
+      modul: moduleContent,
+    },
+  };
+}
+
 // Konstanta batas payload request POST /api/generate (64 KB)
 export const MAX_GENERATE_PAYLOAD_BYTES = 64 * 1024;
 
@@ -177,7 +242,13 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       const cachedUsedChapters = (cachedGen.result as any)?.usedChapters;
 
       // Jika mode stream diminta dan cache hit, kembalikan juga sebagai stream teks dengan header X-Cache: HIT
-      if (body.stream && (body.feature === 'qa' || body.feature === 'summary' || body.feature === 'summary_short')) {
+      if (
+        body.stream &&
+        (body.feature === 'qa' ||
+          body.feature === 'summary' ||
+          body.feature === 'summary_short' ||
+          body.feature === 'quiz_explain')
+      ) {
         const textContent =
           body.feature === 'qa'
             ? (cachedGen.result as any)?.answer || ''
@@ -270,7 +341,9 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         }
       }
     } else if (body.feature === 'quiz_explain') {
-      // Untuk pendalaman 1 butir soal kuis: pilih maksimal 2 bab paling relevan agar cepat & hemat token
+      // Untuk pendalaman 1 butir soal kuis: kirim maksimal 1 bab terfokus agar TTFT & streaming cepat bebas 504
+      const expMode = body.params.explanationMode || 'keduanya';
+      const chapterCharBudget = expMode === 'luar_modul' ? 2200 : 7500;
       const searchQuery = [
         body.params.chapterName && body.params.chapterName !== 'semua' ? body.params.chapterName : '',
         body.params.question || '',
@@ -285,36 +358,31 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       }));
 
       const selection = selectRelevantChapters(chunksWithPos, searchQuery, {
-        maxChapters: 2,
-        maxChars: 14000,
+        maxChapters: 1,
+        maxChars: chapterCharBudget,
       });
 
-      if (selection.hasMatch && selection.selectedChunks.length > 0) {
-        usedChaptersPayload = selection.usedChapters;
-        moduleContent = selection.selectedChunks
-          .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
-          .join('\n\n---\n\n');
-      } else {
-        const fallbackChunks = chunksWithPos.slice(0, 2);
-        usedChaptersPayload = fallbackChunks.map((c: any) => ({
-          position: c.position,
-          chapter_title: c.chapter_title,
-        }));
-        moduleContent = fallbackChunks
-          .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
-          .join('\n\n---\n\n');
-      }
+      const chosenChunks =
+        selection.hasMatch && selection.selectedChunks.length > 0
+          ? selection.selectedChunks.slice(0, 1)
+          : chunksWithPos.slice(0, 1);
 
-      if (moduleContent.length > 18000) {
-        moduleContent = moduleContent.slice(0, 18000);
-      }
+      usedChaptersPayload = chosenChunks.map((c: any) => ({
+        position: c.position,
+        chapter_title: c.chapter_title,
+      }));
+      moduleContent = chosenChunks
+        .map((c: any) => `### ${c.chapter_title}\n\n${extractFocusedExcerpt(c.content || '', searchQuery, chapterCharBudget)}`)
+        .join('\n\n---\n\n');
     } else {
       moduleContent = chunksData.map((c: any) => `${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
     }
   } else {
     moduleContent = `${chunksData.chapter_title}\n\n${chunksData.content}`;
-    if (body.feature === 'quiz_explain' && moduleContent.length > 18000) {
-      moduleContent = moduleContent.slice(0, 18000);
+    if (body.feature === 'quiz_explain') {
+      const chapterCharBudget = body.params.explanationMode === 'luar_modul' ? 2200 : 7500;
+      const searchQuery = body.params.question || '';
+      moduleContent = extractFocusedExcerpt(moduleContent, searchQuery, chapterCharBudget);
     }
     if (body.feature === 'qa' || body.feature === 'quiz_explain') {
       usedChaptersPayload = [{ position: chunksData.position ?? body.chapterPosition ?? 1, chapter_title: chunksData.chapter_title }];
@@ -354,23 +422,54 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     );
   }
 
-  // 7. Mode Streaming untuk QA dan Ringkasan
-  if (body.stream && (body.feature === 'qa' || body.feature === 'summary' || body.feature === 'summary_short')) {
-    const streamVariables =
-      body.feature === 'qa'
-        ? { pertanyaan: body.params.question || '', modul: moduleContent }
-        : body.feature === 'summary_short'
-        ? { maks_poin: body.params.maxPoints, modul: moduleContent }
-        : {
-            gaya: body.params.style,
-            maks_poin: body.params.maxPoints,
-            modul: moduleContent,
-          };
+  // 7. Mode Streaming untuk QA, Ringkasan, dan Penjelasan Lanjutan Kuis
+  if (
+    body.stream &&
+    (body.feature === 'qa' ||
+      body.feature === 'summary' ||
+      body.feature === 'summary_short' ||
+      body.feature === 'quiz_explain')
+  ) {
+    let streamQuizExplainMeta: { expMode: 'modul' | 'luar_modul' | 'keduanya'; isCorrect: boolean } | null = null;
+    let streamVariables: Record<string, any>;
+
+    if (body.feature === 'qa') {
+      streamVariables = { pertanyaan: body.params.question || '', modul: moduleContent };
+    } else if (body.feature === 'summary_short') {
+      streamVariables = { maks_poin: body.params.maxPoints, modul: moduleContent };
+    } else if (body.feature === 'quiz_explain') {
+      const built = buildQuizExplainPayload(body.params, moduleContent);
+      if (!built.isValid) {
+        await deps.deleteUsageLog(reservedLogId);
+        return Response.json(
+          {
+            error:
+              'Parameter soal, opsi A–D, kunci jawaban, dan pilihan pengguna wajib diisi untuk penjelasan lanjutan kuis.',
+          },
+          { status: 400 }
+        );
+      }
+      streamVariables = built.variables;
+      streamQuizExplainMeta = { expMode: built.expMode, isCorrect: built.isCorrect };
+    } else {
+      streamVariables = {
+        gaya: body.params.style,
+        maks_poin: body.params.maxPoints,
+        modul: moduleContent,
+      };
+    }
+
+    const streamPromptName =
+      body.feature === 'summary_short'
+        ? 'summary-short'
+        : body.feature === 'quiz_explain'
+        ? 'quiz-explain'
+        : body.feature;
 
     try {
       const stream = await deps.callGeminiStream(
         {
-          promptName: body.feature,
+          promptName: streamPromptName,
           variables: streamVariables,
           totalDeadlineMs: 48000,
         },
@@ -384,10 +483,17 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
               console.error('[Generate Route] Gagal update usage_log:', uErr);
             }
 
-            // 2. Simpan ke cache (Bentuk result sama persis antara stream dan non-stream: { answer } atau { markdown })
+            // 2. Simpan ke cache (Bentuk result sama persis antara stream dan non-stream)
             const resultToSave =
               body.feature === 'qa'
                 ? { answer: fullText, ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}) }
+                : body.feature === 'quiz_explain' && streamQuizExplainMeta
+                ? {
+                    markdown: fullText,
+                    mode: streamQuizExplainMeta.expMode,
+                    isCorrect: streamQuizExplainMeta.isCorrect,
+                    ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
+                  }
                 : { markdown: fullText };
             try {
               await deps.saveGeneration({
@@ -525,7 +631,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
               attemptTimeoutMs: 20000,
               totalDeadlineMs: 40000,
             },
-            validateAndSanitizeQuiz,
+            (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty),
             reqCount,
             mergeQuizResults
           );
@@ -591,7 +697,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                 attemptTimeoutMs: 25000,
                 totalDeadlineMs: 45000,
               },
-              validateAndSanitizeQuiz,
+              (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty),
               subCount,
               mergeQuizResults
             );
@@ -642,9 +748,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       }
 
       case 'quiz_explain': {
-        const { question, quizOptions, correctOption, selectedOption, chapterName, explanationMode } =
-          body.params;
-        if (!question || !question.trim() || !quizOptions || !correctOption || !selectedOption) {
+        const built = buildQuizExplainPayload(body.params, moduleContent);
+        if (!built.isValid) {
           await deps.deleteUsageLog(reservedLogId);
           return Response.json(
             {
@@ -655,34 +760,17 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           );
         }
 
-        const expMode = explanationMode || 'keduanya';
-        const opsiText = (['A', 'B', 'C', 'D'] as const)
-          .map((key) => `- **${key}.** ${quizOptions[key]}`)
-          .join('\n');
-        const kunciFull = `${correctOption} (${quizOptions[correctOption]})`;
-        const jawabanFull = `${selectedOption} (${quizOptions[selectedOption]})`;
-        const statusJawaban = selectedOption === correctOption ? 'BENAR' : 'SALAH';
-
         const gen = await deps.callGeminiText({
           promptName: 'quiz-explain',
-          variables: {
-            pertanyaan: question.trim(),
-            opsi: opsiText,
-            kunci: kunciFull,
-            jawaban_pengguna: jawabanFull,
-            status_jawaban: statusJawaban,
-            bab: chapterName || 'Umum',
-            mode_penjelasan: expMode,
-            modul: moduleContent,
-          },
+          variables: built.variables,
           attemptTimeoutMs: 20000,
           totalDeadlineMs: 40000,
         });
 
         resultData = {
           markdown: gen.data,
-          mode: expMode,
-          isCorrect: selectedOption === correctOption,
+          mode: built.expMode,
+          isCorrect: built.isCorrect,
           ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
         };
         tokensIn = gen.tokensIn;
@@ -851,7 +939,22 @@ export function createProductionDeps(): GenerateDependencies {
     },
     async getCachedGeneration(userId, moduleId, feature, paramsHash, promptVersion) {
       const supabase = await createClient();
-      const primary = await supabase
+
+      // Single-query lookup untuk quiz_explain (mendukung cache fitur 'quiz_explain' maupun fallback 'qa' bila migrasi 0004 belum jalan)
+      if (feature === 'quiz_explain') {
+        return await supabase
+          .from('generations')
+          .select('result, tokens_in, tokens_out')
+          .eq('user_id', userId)
+          .eq('module_id', moduleId)
+          .eq('params_hash', paramsHash)
+          .eq('prompt_version', promptVersion)
+          .in('feature', ['quiz_explain', 'qa'])
+          .limit(1)
+          .maybeSingle();
+      }
+
+      return await supabase
         .from('generations')
         .select('result, tokens_in, tokens_out')
         .match({
@@ -862,23 +965,6 @@ export function createProductionDeps(): GenerateDependencies {
           prompt_version: promptVersion,
         })
         .maybeSingle();
-
-      // Fallback cache aman bila migrasi 0004 belum dijalankan pada database live
-      if (!primary.data && feature === 'quiz_explain') {
-        return await supabase
-          .from('generations')
-          .select('result, tokens_in, tokens_out')
-          .match({
-            user_id: userId,
-            module_id: moduleId,
-            feature: 'qa',
-            params_hash: paramsHash,
-            prompt_version: promptVersion,
-          })
-          .maybeSingle();
-      }
-
-      return primary;
     },
     async getModuleChunks(moduleId: string, chapterPosition?: number) {
       const supabase = await createClient();
@@ -913,6 +999,6 @@ export function createProductionDeps(): GenerateDependencies {
     },
     dailyQuotaLimit: getDailyQuotaLimit(),
     getUserQuotaLimit: (user: any) => getUserDailyQuotaLimit(user),
-    promptVersion: process.env.PROMPT_VERSION || '6',
+    promptVersion: process.env.PROMPT_VERSION || '7',
   };
 }

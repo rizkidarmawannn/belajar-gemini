@@ -53,7 +53,9 @@ function isTransientError(error: any): boolean {
     msg.includes('timeout') ||
     msg.includes('format json') ||
     msg.includes('json') ||
-    msg.includes('parse')
+    msg.includes('parse') ||
+    msg.includes('tingkat kesulitan') ||
+    msg.includes('kriteria kualitas')
   );
 }
 
@@ -63,6 +65,9 @@ export function formatFriendlyErrorMessage(error: any): string {
 
   if (msg.includes('gemini_model belum dikonfigurasi')) {
     return error.message;
+  }
+  if (msg.includes('tingkat kesulitan')) {
+    return 'AI belum berhasil menyusun soal dengan tingkat kesulitan yang diminta. Silakan coba buat kuis kembali.';
   }
   if (msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('quota')) {
     return 'Layanan Gemini sedang mengalami lonjakan beban atau batas pemakaian tercapai. Mohon tunggu beberapa detik dan coba kembali.';

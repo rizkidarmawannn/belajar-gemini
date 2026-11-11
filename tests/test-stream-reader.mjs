@@ -170,3 +170,25 @@ test('api-stream-reader: Header X-Used-Chapters aman dari batas Latin-1 dengan e
   assert.equal(result.usedChapters[1].chapter_title, 'Bab 2: Modèle Théorique & Système Français (Français)');
   assert.equal(result.usedChapters[2].chapter_title, 'Bab 3: Señor & Niño — Analisis Risiko');
 });
+
+test('api-stream-reader: Status 504 / 502 HTML non-JSON dari gateway menghasilkan pesan ramah berbahasa Indonesia', async () => {
+  const gateway504 = new Response('<html><body><h1>504 Gateway Time-out</h1></body></html>', {
+    status: 504,
+    headers: { 'Content-Type': 'text/html' },
+  });
+
+  await assert.rejects(
+    () => readApiResponse({ response: gateway504 }),
+    /Waktu server habis \(504 Gateway Timeout\)\. Silakan coba lagi sesaat lagi\./
+  );
+
+  const other500Html = new Response('<html><body>Error 500</body></html>', {
+    status: 500,
+    headers: { 'Content-Type': 'text/html' },
+  });
+
+  await assert.rejects(
+    () => readApiResponse({ response: other500Html }),
+    /Server merespons status 500\./
+  );
+});
