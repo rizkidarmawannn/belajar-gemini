@@ -2,9 +2,7 @@
 
 import { useState } from 'react';
 import { HelpCircle, Sparkles, Loader2, Copy, Check } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeSanitize from 'rehype-sanitize';
+import FormattedContent from '@/components/FormattedContent';
 
 import { readApiResponse, formatFriendlyErrorMessage, cleanDisplayText, type UsedChapterInfo, type UsedChaptersMode } from '@/lib/learning/api-stream-reader';
 
@@ -227,45 +225,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
                 <span>Gemini AI sedang membaca isi modul dan merumuskan jawaban mendalam...</span>
               </div>
             )}
-            {qaAnswer && (
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeSanitize]}
-                components={{
-                  h3: ({ node, ...props }) => (
-                    <h3 className="text-base font-bold text-indigo-700 dark:text-indigo-400 pt-3 pb-1 border-b border-slate-200 dark:border-slate-800" {...props} />
-                  ),
-                  h4: ({ node, ...props }) => (
-                    <h4 className="text-sm font-bold text-slate-900 dark:text-white pt-2" {...props} />
-                  ),
-                  p: ({ node, children, ...props }) => {
-                    const textContent = String(children);
-                    if (textContent.includes('*Contoh:*') || textContent.includes('Contoh:')) {
-                      return (
-                        <div className="p-3 my-2 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40 text-amber-900 dark:text-amber-200 text-sm leading-relaxed">
-                          <p {...props}>{children}</p>
-                        </div>
-                      );
-                    }
-                    return <p className="my-2 leading-relaxed" {...props}>{children}</p>;
-                  },
-                  ul: ({ node, ...props }) => (
-                    <ul className="list-disc pl-5 my-2 space-y-1 text-sm" {...props} />
-                  ),
-                  ol: ({ node, ...props }) => (
-                    <ol className="list-decimal pl-5 my-2 space-y-1 text-sm" {...props} />
-                  ),
-                  strong: ({ node, ...props }) => (
-                    <strong className="font-semibold text-slate-900 dark:text-white" {...props} />
-                  ),
-                  hr: ({ node, ...props }) => (
-                    <hr className="my-4 border-slate-200 dark:border-slate-800" {...props} />
-                  ),
-                }}
-              >
-                {cleanDisplayText(qaAnswer)}
-              </ReactMarkdown>
-            )}
+            {qaAnswer && <FormattedContent content={cleanDisplayText(qaAnswer)} />}
             {isAsking && qaAnswer && (
               <span className="inline-block w-2 h-4 bg-indigo-600 animate-pulse ml-1 align-middle" />
             )}

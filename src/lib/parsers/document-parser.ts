@@ -1,4 +1,6 @@
 import mammoth from 'mammoth';
+import { htmlToStructuredMarkdown } from './html-to-markdown.ts';
+import { formatStructuredModuleText } from './text-formatter.ts';
 
 export interface ExtractedDocument {
   text: string;
@@ -7,28 +9,39 @@ export interface ExtractedDocument {
 
 export async function extractDocumentText(buffer: Buffer, mimeType: string): Promise<ExtractedDocument> {
   let text = '';
+  const normalizedMime = (mimeType || '').split(';')[0].trim().toLowerCase();
 
   try {
-    if (mimeType === 'application/pdf') {
+    if (normalizedMime === 'application/pdf') {
       // Menggunakan require untuk pdf-parse agar kompatibel di lingkungan Node.js serverless
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const pdfParse = require('pdf-parse');
       const pdfData = await pdfParse(buffer);
       text = pdfData.text || '';
     } else if (
-      mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-      mimeType === 'application/docx'
+      normalizedMime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      normalizedMime === 'application/docx'
     ) {
-      const docxResult = await mammoth.extractRawText({ buffer });
-      text = docxResult.value || '';
-    } else if (mimeType === 'text/plain') {
+      // Gunakan convertToHtml agar struktur heading, teks tebal, daftar bullet/angka, dan tabel tetap terjaga
+      const htmlResult = await mammoth.convertToHtml(
+        { buffer },
+        { convertImage: mammoth.images.imgElement(async () => ({ src: '' })) }
+      );
+      const markdownFromHtml = htmlToStructuredMarkdown(htmlResult.value || '');
+      if (markdownFromHtml.trim().length > 0) {
+        text = markdownFromHtml;
+      } else {
+        const docxResult = await mammoth.extractRawText({ buffer });
+        text = docxResult.value || '';
+      }
+    } else if (normalizedMime === 'text/plain' || normalizedMime === 'application/txt') {
       text = buffer.toString('utf-8');
     } else {
       throw new Error(`Format file tidak didukung: ${mimeType}. Hanya PDF, DOCX, dan TXT yang diperbolehkan.`);
     }
 
-    // Normalisasi spasi dan baris baru yang berlebihan
-    text = text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    // Normalisasi dan rapikan tata letak teks hasil ekstraksi (pisahkan poin, aturan, dan contoh)
+    text = formatStructuredModuleText(text);
 
     if (!text || text.length === 0) {
       throw new Error('Dokumen tidak memiliki teks yang dapat diekstrak atau dokumen berupa gambar pindaian.');

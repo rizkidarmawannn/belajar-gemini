@@ -27,10 +27,22 @@ export const StrictParamsSchema = z
     maxPoints: z.number().int().min(1).max(20).optional().default(8),
     count: z.number().int().min(1).max(100).optional().default(5),
     difficulty: z.enum(['mudah', 'sedang', 'sulit', 'campuran']).optional().default('sedang'),
+    explanationMode: z.enum(['modul', 'luar_modul', 'keduanya']).optional().default('modul'),
     chapterName: z.string().max(100, 'Nama bab maksimal 100 karakter').optional().default('semua'),
     topic: z.string().max(200, 'Topik maksimal 200 karakter').optional(),
-    question: z.string().max(500, 'Pertanyaan maksimal 500 karakter').optional(),
+    question: z.string().max(1000, 'Pertanyaan maksimal 1000 karakter').optional(),
     userAnswer: z.string().max(3000, 'Jawaban esai maksimal 3000 karakter').optional(),
+    quizOptions: z
+      .object({
+        A: z.string().min(1).max(600),
+        B: z.string().min(1).max(600),
+        C: z.string().min(1).max(600),
+        D: z.string().min(1).max(600),
+      })
+      .strict()
+      .optional(),
+    correctOption: z.enum(['A', 'B', 'C', 'D']).optional(),
+    selectedOption: z.enum(['A', 'B', 'C', 'D']).optional(),
   })
   .strict({ message: 'Objek params memuat kunci yang tidak diizinkan.' });
 
@@ -38,7 +50,7 @@ export const StrictParamsSchema = z
 export const GenerateRequestSchema = z.object({
   moduleId: z.string().uuid({ message: 'ID modul harus berupa format UUID yang valid' }),
   feature: z.enum(
-    ['summary', 'summary_short', 'flashcards', 'mnemonic', 'quiz', 'qa', 'essay_eval'],
+    ['summary', 'summary_short', 'flashcards', 'mnemonic', 'quiz', 'quiz_explain', 'qa', 'essay_eval'],
     { message: 'Fitur yang diminta tidak valid atau tidak didukung oleh database' }
   ),
   chapterPosition: z.number().int().positive().optional(),
@@ -257,13 +269,55 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           }
         }
       }
+    } else if (body.feature === 'quiz_explain') {
+      // Untuk pendalaman 1 butir soal kuis: pilih maksimal 2 bab paling relevan agar cepat & hemat token
+      const searchQuery = [
+        body.params.chapterName && body.params.chapterName !== 'semua' ? body.params.chapterName : '',
+        body.params.question || '',
+        ...(body.params.quizOptions ? Object.values(body.params.quizOptions) : []),
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      const chunksWithPos = chunksData.map((c: any, idx: number) => ({
+        ...c,
+        position: typeof c.position === 'number' ? c.position : idx + 1,
+      }));
+
+      const selection = selectRelevantChapters(chunksWithPos, searchQuery, {
+        maxChapters: 2,
+        maxChars: 14000,
+      });
+
+      if (selection.hasMatch && selection.selectedChunks.length > 0) {
+        usedChaptersPayload = selection.usedChapters;
+        moduleContent = selection.selectedChunks
+          .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+          .join('\n\n---\n\n');
+      } else {
+        const fallbackChunks = chunksWithPos.slice(0, 2);
+        usedChaptersPayload = fallbackChunks.map((c: any) => ({
+          position: c.position,
+          chapter_title: c.chapter_title,
+        }));
+        moduleContent = fallbackChunks
+          .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+          .join('\n\n---\n\n');
+      }
+
+      if (moduleContent.length > 18000) {
+        moduleContent = moduleContent.slice(0, 18000);
+      }
     } else {
       moduleContent = chunksData.map((c: any) => `${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
     }
   } else {
     moduleContent = `${chunksData.chapter_title}\n\n${chunksData.content}`;
-    if (body.feature === 'qa') {
-      usedChaptersPayload = [{ position: chunksData.position, chapter_title: chunksData.chapter_title }];
+    if (body.feature === 'quiz_explain' && moduleContent.length > 18000) {
+      moduleContent = moduleContent.slice(0, 18000);
+    }
+    if (body.feature === 'qa' || body.feature === 'quiz_explain') {
+      usedChaptersPayload = [{ position: chunksData.position ?? body.chapterPosition ?? 1, chapter_title: chunksData.chapter_title }];
     }
   }
 
@@ -454,6 +508,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
 
       case 'quiz': {
         const reqCount = body.params.count || 5;
+        const expMode = body.params.explanationMode || 'modul';
 
         if (reqCount <= 15) {
           // Permintaan kuis skala kecil (5-15 butir): 1 panggilan cepat
@@ -464,6 +519,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                 jumlah: reqCount,
                 tingkat: body.params.difficulty,
                 bab: body.params.chapterName || 'semua',
+                mode_penjelasan: expMode,
                 modul: moduleContent,
               },
               attemptTimeoutMs: 20000,
@@ -473,14 +529,29 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             reqCount,
             mergeQuizResults
           );
-          resultData = gen.data;
+          resultData = {
+            ...gen.data,
+            soal: (gen.data?.soal || []).map((s: any) => ({
+              ...s,
+              sumber_penjelasan: s.sumber_penjelasan || expMode,
+            })),
+          };
           tokensIn = gen.tokensIn;
           tokensOut = gen.tokensOut;
         } else {
           // Permintaan kuis skala besar (20, 25, 50, 100 butir):
-          // Eksekusi sub-batch paralel menggunakan Promise.all agar waktu proses total tetap singkat (< 8-10 detik)
+          // Eksekusi sub-batch paralel menggunakan Promise.all agar waktu proses total tetap singkat
           // dan bebas dari risiko timeout serverless Netlify/Vercel (504 Gateway Timeout).
-          const BATCH_SIZE = reqCount >= 60 ? 20 : reqCount >= 30 ? 15 : 10;
+          const BATCH_SIZE =
+            expMode === 'keduanya'
+              ? reqCount >= 30
+                ? 15
+                : 10
+              : reqCount >= 60
+              ? 20
+              : reqCount >= 30
+              ? 15
+              : 10;
           const numBatches = Math.ceil(reqCount / BATCH_SIZE);
 
           const chunksList = Array.isArray(chunksData) ? chunksData : [];
@@ -514,6 +585,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                   jumlah: subCount,
                   tingkat: body.params.difficulty,
                   bab: subBabName,
+                  mode_penjelasan: expMode,
                   modul: subModuleContent,
                 },
                 attemptTimeoutMs: 25000,
@@ -557,14 +629,64 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             }
           }
 
-          // Nomor ulang terurut 1..N
+          // Nomor ulang terurut 1..N dan pastikan label sumber terisi
           const renumbered = uniqueSoal.slice(0, reqCount).map((s, i) => ({
             ...s,
+            sumber_penjelasan: s.sumber_penjelasan || expMode,
             nomor: i + 1,
           }));
 
           resultData = { soal: renumbered };
         }
+        break;
+      }
+
+      case 'quiz_explain': {
+        const { question, quizOptions, correctOption, selectedOption, chapterName, explanationMode } =
+          body.params;
+        if (!question || !question.trim() || !quizOptions || !correctOption || !selectedOption) {
+          await deps.deleteUsageLog(reservedLogId);
+          return Response.json(
+            {
+              error:
+                'Parameter soal, opsi A–D, kunci jawaban, dan pilihan pengguna wajib diisi untuk penjelasan lanjutan kuis.',
+            },
+            { status: 400 }
+          );
+        }
+
+        const expMode = explanationMode || 'keduanya';
+        const opsiText = (['A', 'B', 'C', 'D'] as const)
+          .map((key) => `- **${key}.** ${quizOptions[key]}`)
+          .join('\n');
+        const kunciFull = `${correctOption} (${quizOptions[correctOption]})`;
+        const jawabanFull = `${selectedOption} (${quizOptions[selectedOption]})`;
+        const statusJawaban = selectedOption === correctOption ? 'BENAR' : 'SALAH';
+
+        const gen = await deps.callGeminiText({
+          promptName: 'quiz-explain',
+          variables: {
+            pertanyaan: question.trim(),
+            opsi: opsiText,
+            kunci: kunciFull,
+            jawaban_pengguna: jawabanFull,
+            status_jawaban: statusJawaban,
+            bab: chapterName || 'Umum',
+            mode_penjelasan: expMode,
+            modul: moduleContent,
+          },
+          attemptTimeoutMs: 20000,
+          totalDeadlineMs: 40000,
+        });
+
+        resultData = {
+          markdown: gen.data,
+          mode: expMode,
+          isCorrect: selectedOption === correctOption,
+          ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
+        };
+        tokensIn = gen.tokensIn;
+        tokensOut = gen.tokensOut;
         break;
       }
 
@@ -729,7 +851,7 @@ export function createProductionDeps(): GenerateDependencies {
     },
     async getCachedGeneration(userId, moduleId, feature, paramsHash, promptVersion) {
       const supabase = await createClient();
-      return await supabase
+      const primary = await supabase
         .from('generations')
         .select('result, tokens_in, tokens_out')
         .match({
@@ -740,20 +862,37 @@ export function createProductionDeps(): GenerateDependencies {
           prompt_version: promptVersion,
         })
         .maybeSingle();
+
+      // Fallback cache aman bila migrasi 0004 belum dijalankan pada database live
+      if (!primary.data && feature === 'quiz_explain') {
+        return await supabase
+          .from('generations')
+          .select('result, tokens_in, tokens_out')
+          .match({
+            user_id: userId,
+            module_id: moduleId,
+            feature: 'qa',
+            params_hash: paramsHash,
+            prompt_version: promptVersion,
+          })
+          .maybeSingle();
+      }
+
+      return primary;
     },
     async getModuleChunks(moduleId: string, chapterPosition?: number) {
       const supabase = await createClient();
       if (chapterPosition) {
         return await supabase
           .from('module_chunks')
-          .select('chapter_title, content')
+          .select('position, chapter_title, content')
           .eq('module_id', moduleId)
           .eq('position', chapterPosition)
           .single();
       }
       return await supabase
         .from('module_chunks')
-        .select('chapter_title, content')
+        .select('position, chapter_title, content')
         .eq('module_id', moduleId)
         .order('position', { ascending: true });
     },
@@ -762,12 +901,18 @@ export function createProductionDeps(): GenerateDependencies {
     callGeminiStream: generateStream,
     async saveGeneration(entry) {
       const admin = createAdminClient();
-      await admin.from('generations').upsert(entry, {
+      const { error } = await admin.from('generations').upsert(entry, {
         onConflict: 'user_id,module_id,feature,params_hash,prompt_version',
       });
+      if (error && entry.feature === 'quiz_explain') {
+        await admin.from('generations').upsert(
+          { ...entry, feature: 'qa' },
+          { onConflict: 'user_id,module_id,feature,params_hash,prompt_version' }
+        );
+      }
     },
     dailyQuotaLimit: getDailyQuotaLimit(),
     getUserQuotaLimit: (user: any) => getUserDailyQuotaLimit(user),
-    promptVersion: process.env.PROMPT_VERSION || '4',
+    promptVersion: process.env.PROMPT_VERSION || '6',
   };
 }

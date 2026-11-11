@@ -10,18 +10,35 @@ export const QuizOptionSchema = z.object({
   D: z.string().min(1, 'Opsi D tidak boleh kosong'),
 });
 
+export const QuizExplanationSourceSchema = z.enum(['modul', 'luar_modul', 'keduanya']);
+export type QuizExplanationSource = z.infer<typeof QuizExplanationSourceSchema>;
+
 // Skema 1 Butir Soal
-export const QuizItemSchema = z.object({
-  nomor: z.number().int().positive().optional(),
-  pertanyaan: z.string().min(5, 'Pertanyaan minimal 5 karakter'),
-  opsi: QuizOptionSchema,
-  kunci: z.enum(['A', 'B', 'C', 'D'], {
-    errorMap: () => ({ message: 'Kunci jawaban harus salah satu dari A, B, C, atau D' }),
-  }),
-  penjelasan: z.string().min(1, 'Penjelasan jawaban wajib disertakan'),
-  bab: z.string().default('Umum'),
-  tingkat: z.enum(['mudah', 'sedang', 'sulit']).default('sedang'),
-});
+export const QuizItemSchema = z
+  .object({
+    nomor: z.number().int().positive().optional(),
+    pertanyaan: z.string().min(5, 'Pertanyaan minimal 5 karakter'),
+    opsi: QuizOptionSchema,
+    kunci: z.enum(['A', 'B', 'C', 'D'], {
+      errorMap: () => ({ message: 'Kunci jawaban harus salah satu dari A, B, C, atau D' }),
+    }),
+    penjelasan: z.string().optional().default(''),
+    penjelasan_modul: z.string().optional(),
+    penjelasan_luar: z.string().optional(),
+    sumber_penjelasan: QuizExplanationSourceSchema.optional(),
+    bab: z.string().default('Umum'),
+    tingkat: z.enum(['mudah', 'sedang', 'sulit']).default('sedang'),
+  })
+  .refine(
+    (item) =>
+      item.penjelasan.trim().length > 0 ||
+      (item.penjelasan_modul?.trim().length ?? 0) > 0 ||
+      (item.penjelasan_luar?.trim().length ?? 0) > 0,
+    {
+      message: 'Penjelasan jawaban wajib disertakan',
+      path: ['penjelasan'],
+    }
+  );
 
 // Skema Kumpulan Soal Kuis
 export const QuizSchema = z.object({
@@ -173,8 +190,21 @@ export function validateAndSanitizeQuiz(raw: unknown): QuizData {
     }
 
     seenQuestions.add(qNorm);
+    const pModul = item.penjelasan_modul?.trim() || undefined;
+    const pLuar = item.penjelasan_luar?.trim() || undefined;
+    let combinedPenjelasan = item.penjelasan.trim();
+    if (!combinedPenjelasan) {
+      const parts: string[] = [];
+      if (pModul) parts.push(`Berdasarkan Modul:\n${pModul}`);
+      if (pLuar) parts.push(`Dari Luar Modul:\n${pLuar}`);
+      combinedPenjelasan = parts.join('\n\n');
+    }
+
     validSoal.push({
       ...item,
+      penjelasan: combinedPenjelasan,
+      ...(pModul ? { penjelasan_modul: pModul } : {}),
+      ...(pLuar ? { penjelasan_luar: pLuar } : {}),
       nomor: validSoal.length + 1,
     });
   }

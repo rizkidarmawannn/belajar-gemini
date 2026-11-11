@@ -2,9 +2,7 @@
 
 import { useState } from 'react';
 import { Brain, Loader2, Copy, Check } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeSanitize from 'rehype-sanitize';
+import FormattedContent from '@/components/FormattedContent';
 import { formatFriendlyErrorMessage } from '@/lib/learning/api-stream-reader';
 
 interface Chunk {
@@ -173,11 +171,7 @@ export default function MnemonicTab({ moduleId, chunks, onError }: MnemonicTabPr
                 <span>Gemini AI sedang menyusun akronim dan analogi kreatif...</span>
               </div>
             )}
-            {mnemonicResult && (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-                {mnemonicResult}
-              </ReactMarkdown>
-            )}
+            {mnemonicResult && <FormattedContent content={mnemonicResult} />}
           </div>
         </div>
       )}
