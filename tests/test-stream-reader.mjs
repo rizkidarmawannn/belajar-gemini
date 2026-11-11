@@ -5,6 +5,10 @@ import {
   cleanDisplayText,
   formatFriendlyErrorMessage,
 } from '../src/lib/learning/api-stream-reader.ts';
+import {
+  parseGeminiSseStream,
+  trimContinuationOverlap,
+} from '../src/lib/gemini/sse-stream.ts';
 
 test('api-stream-reader: Kasus 1 - New Stream (text/plain berurutan)', async () => {
   const chunks = ['Halo ', 'dunia ', 'belajar!'];
@@ -190,5 +194,105 @@ test('api-stream-reader: Status 504 / 502 HTML non-JSON dari gateway menghasilka
   await assert.rejects(
     () => readApiResponse({ response: other500Html }),
     /Server merespons status 500\./
+  );
+});
+
+test('sse-stream: parseGeminiSseStream menangani byte UTF-8 terbelah, keep-alive, thought, dan EOF satu baris', async () => {
+  const payload1 = JSON.stringify({
+    candidates: [
+      {
+        content: {
+          parts: [
+            { text: 'internal reasoning...', thought: true },
+            { text: 'Fenomena ketidaksesuaian — “mismatch” tenaga kerja ' },
+          ],
+        },
+      },
+    ],
+  });
+  const payload2 = JSON.stringify({
+    candidates: [
+      {
+        content: { parts: [{ text: 'terjadi saat keahlian tidak selaras.' }] },
+        finishReason: 'STOP',
+      },
+    ],
+    usageMetadata: { promptTokenCount: 110, candidatesTokenCount: 42 },
+  });
+
+  // Sengaja potong tepat di tengah byte UTF-8 em-dash (—) dan di tengah "\r\n\r\n" serta akhiri tanpa "\n\n"
+  const rawSse = `: keep-alive\r\ndata: ${payload1}\r\n\r\ndata: ${payload2}\r\n`;
+  const allBytes = new TextEncoder().encode(rawSse);
+  const emDashIdx = allBytes.indexOf(0xe2);
+  assert.ok(emDashIdx > 0);
+
+  const splitPoints = [emDashIdx + 1, emDashIdx + 2, allBytes.length - 5];
+  const stream = new ReadableStream({
+    start(controller) {
+      let prev = 0;
+      for (const sp of splitPoints) {
+        controller.enqueue(allBytes.slice(prev, sp));
+        prev = sp;
+      }
+      controller.enqueue(allBytes.slice(prev));
+      controller.close();
+    },
+  });
+
+  let text = '';
+  let usage = null;
+  for await (const chunk of parseGeminiSseStream(stream)) {
+    text += chunk.text;
+    if (chunk.usageMetadata) usage = chunk.usageMetadata;
+  }
+
+  assert.equal(
+    text,
+    'Fenomena ketidaksesuaian — “mismatch” tenaga kerja terjadi saat keahlian tidak selaras.'
+  );
+  assert.ok(!text.includes('\uFFFD'));
+  assert.ok(!text.includes('internal reasoning'));
+  assert.equal(usage.candidatesTokenCount, 42);
+});
+
+test('sse-stream: parseGeminiSseStream melempar error terstruktur pada event error atau blokir SAFETY', async () => {
+  const errorSse = `data: ${JSON.stringify({ error: { code: 503, message: 'Model overloaded' } })}\n\n`;
+  const stream1 = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(errorSse));
+      controller.close();
+    },
+  });
+
+  await assert.rejects(async () => {
+    for await (const _chunk of parseGeminiSseStream(stream1)) {
+      // consume
+    }
+  }, /Model overloaded/);
+
+  const safetySse = `data: ${JSON.stringify({ candidates: [{ finishReason: 'SAFETY' }] })}\n\n`;
+  const stream2 = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(safetySse));
+      controller.close();
+    },
+  });
+
+  await assert.rejects(async () => {
+    for await (const _chunk of parseGeminiSseStream(stream2)) {
+      // consume
+    }
+  }, /filter keamanan/i);
+});
+
+test('sse-stream: trimContinuationOverlap menghapus pengulangan ujung tanpa memotong sambungan bersih', () => {
+  const prefix = 'Pilihan A mengidentifikasi fenomena ketidaksesuaian penawaran tenaga kerja (*mismatch';
+  assert.equal(
+    trimContinuationOverlap(prefix, '(*mismatch*) yang terjadi di pasar kerja.'),
+    '*) yang terjadi di pasar kerja.'
+  );
+  assert.equal(
+    trimContinuationOverlap(prefix, '*) — yaitu kondisi ketika keterampilan belum sesuai.'),
+    '*) — yaitu kondisi ketika keterampilan belum sesuai.'
   );
 });

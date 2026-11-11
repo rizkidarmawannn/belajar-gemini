@@ -1,7 +1,8 @@
 import 'server-only';
-import { getGeminiClient, getModelName } from './client.ts';
+import { getGeminiClient, getModelName, openGeminiSseStream } from './client.ts';
 import { renderPrompt, type RenderedPrompt } from './render-prompt.ts';
 import { cleanAndParseJson } from '../validators/index.ts';
+import { trimContinuationOverlap } from './sse-stream.ts';
 
 export interface GenerationOptions {
   promptName: string;
@@ -51,6 +52,12 @@ function isTransientError(error: any): boolean {
     msg.includes('503') ||
     msg.includes('500') ||
     msg.includes('timeout') ||
+    msg.includes('terminated') ||
+    msg.includes('econnreset') ||
+    msg.includes('socket') ||
+    msg.includes('network') ||
+    msg.includes('fetch failed') ||
+    msg.includes('other side closed') ||
     msg.includes('format json') ||
     msg.includes('json') ||
     msg.includes('parse') ||
@@ -288,12 +295,101 @@ export async function generateJson<T = any>(
   };
 }
 
+async function recoverInterruptedStream(params: {
+  model: string;
+  systemInstruction: string;
+  renderedPromptText: string;
+  temperature: number;
+  accumulatedText: string;
+  remainingTimeMs: number;
+  abortSignal: AbortSignal;
+  abortPromise: Promise<never>;
+}): Promise<{ appendText: string; tokensIn: number; tokensOut: number } | null> {
+  const {
+    model,
+    systemInstruction,
+    renderedPromptText,
+    temperature,
+    accumulatedText,
+    remainingTimeMs,
+    abortSignal,
+    abortPromise,
+  } = params;
+
+  const hasPrefix = accumulatedText.trim().length > 0;
+  const recoveryPrompt = hasPrefix
+    ? `${renderedPromptText}\n\n---\nPERHATIAN PENTING: Sebagian awal jawaban sudah dikirimkan ke pengguna hingga tepat pada akhiran berikut:\n<TEKS_SUDAH_TERKIRIM>\n${accumulatedText}\n</TEKS_SUDAH_TERKIRIM>\n\nLanjutkan penulisan TEPAT dari titik akhir di atas sampai seluruh bagian selesai tuntas.\nATURAN LANJUTAN:\n1. DILARANG mengulang kata, kalimat, atau subjudul yang sudah ada di dalam <TEKS_SUDAH_TERKIRIM>.\n2. Jika kalimat, tanda baca, atau format markdown terakhir terpotong di tengah jalan, langsung selesaikan kalimat tersebut lalu teruskan ke bagian berikutnya.`
+    : renderedPromptText;
+
+  const ai = getGeminiClient();
+  const recoveryDeadline = Date.now() + remainingTimeMs;
+  const MAX_RECOVERY_ATTEMPTS = 2;
+
+  for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt++) {
+    if (abortSignal.aborted) return null;
+    const timeLeft = recoveryDeadline - Date.now();
+    if (timeLeft < 3000) return null;
+
+    const effectiveTimeout = calculateEffectiveTimeout(18000, timeLeft);
+    let recTimer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        recTimer = setTimeout(() => reject(new Error('timeout')), effectiveTimeout);
+      });
+
+      const response: any = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: recoveryPrompt,
+          config: {
+            systemInstruction,
+            temperature,
+          },
+        }),
+        timeoutPromise,
+        abortPromise,
+      ]);
+
+      const rawText = (response?.text || '').toString();
+      const appendText = hasPrefix
+        ? trimContinuationOverlap(accumulatedText, rawText)
+        : rawText.trim();
+
+      if (!appendText || appendText.trim().length === 0) {
+        return null;
+      }
+
+      return {
+        appendText,
+        tokensIn:
+          response?.usageMetadata?.promptTokenCount ?? Math.ceil(recoveryPrompt.length / 4),
+        tokensOut:
+          response?.usageMetadata?.candidatesTokenCount ?? Math.max(1, Math.ceil(appendText.length / 4)),
+      };
+    } catch (recErr: any) {
+      if (abortSignal.aborted) return null;
+      console.warn(
+        `[generateStream recovery attempt ${attempt + 1}] Gagal memulihkan stream:`,
+        recErr?.message || recErr
+      );
+      if (attempt < MAX_RECOVERY_ATTEMPTS - 1 && isTransientError(recErr)) {
+        await waitWithJitter(attempt, 500);
+        continue;
+      }
+      return null;
+    } finally {
+      if (recTimer) clearTimeout(recTimer);
+    }
+  }
+
+  return null;
+}
+
 /**
- * Panggilan streaming untuk Tanya Jawab (QA) dan Ringkasan.
- * Memastikan onBeforeClose di-await SEBELUM controller.close() agar serverless function tidak mati di tengah jalan.
- * Menggunakan AbortController terhubung ke deadline total untuk menghentikan pemanggilan yang macet.
- * Bila terpotong karena batas waktu atau gangguan koneksi, teks parsial TIDAK disimpan ke generations cache,
- * namun usage_log tetap diperbarui dan stream ditutup secara rapi dengan penanda [TRUNCATED:...].
+ * Panggilan streaming untuk Tanya Jawab (QA), Ringkasan, dan Penjelasan Kuis.
+ * Menggunakan parser SSE UTF-8 streaming yang tahan pemotongan chunk, retry pembukaan stream,
+ * dan pemulihan otomatis (kelanjutan non-stream) apabila koneksi SSE terputus di tengah jalan.
  */
 export async function generateStream(
   options: GenerationOptions,
@@ -303,32 +399,55 @@ export async function generateStream(
 
   const rendered: RenderedPrompt = renderPrompt(promptName, variables);
   const systemInstruction = customSystemInstruction || rendered.systemInstruction;
+  const temperature = options.temperature ?? 0.2;
 
-  const ai = getGeminiClient();
   const model = getModelName();
   const startTime = Date.now();
 
   const abortController = new AbortController();
+  let isClientCancelled = false;
   const deadlineTimer = setTimeout(() => {
     abortController.abort(new Error('DEADLINE_EXCEEDED'));
   }, totalDeadlineMs);
 
-  let responseStream: any;
-  try {
-    responseStream = await ai.models.generateContentStream({
-      model,
-      contents: rendered.promptText,
-      config: {
+  let responseStream: AsyncGenerator<{ text: string; usageMetadata?: any; finishReason?: string }>;
+  const MAX_OPEN_RETRIES = 3;
+  let openError: any = null;
+
+  for (let attempt = 0; attempt < MAX_OPEN_RETRIES; attempt++) {
+    const remaining = totalDeadlineMs - (Date.now() - startTime);
+    if (remaining < 4000) {
+      openError = new Error('DEADLINE_EXCEEDED');
+      break;
+    }
+
+    try {
+      responseStream = await openGeminiSseStream({
+        model,
+        promptText: rendered.promptText,
         systemInstruction,
-        temperature: options.temperature ?? 0.2,
-        httpOptions: {
-          timeout: totalDeadlineMs,
-        },
-      },
-    });
-  } catch (err: any) {
+        temperature,
+        signal: abortController.signal,
+      });
+      openError = null;
+      break;
+    } catch (err: any) {
+      openError = err;
+      if (attempt < MAX_OPEN_RETRIES - 1 && isTransientError(err)) {
+        console.warn(
+          `[generateStream open attempt ${attempt + 1}] Gagal membuka stream, retry:`,
+          err?.message || err
+        );
+        await waitWithJitter(attempt, 700);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (openError || !responseStream!) {
     clearTimeout(deadlineTimer);
-    throw err;
+    throw openError || new Error('Gagal membuka koneksi streaming Gemini.');
   }
 
   const encoder = new TextEncoder();
@@ -350,6 +469,8 @@ export async function generateStream(
           { once: true }
         );
       });
+      // Cegah unhandledRejection bila abort terpicu setelah loop selesai
+      abortPromise.catch(() => {});
 
       const iterator = responseStream[Symbol.asyncIterator]();
       let streamStoppedEarly = false;
@@ -357,35 +478,45 @@ export async function generateStream(
 
       try {
         while (true) {
-          // Periksa apakah batas total waktu telah tercapai
           if (Date.now() - startTime >= totalDeadlineMs) {
             streamStoppedEarly = true;
             stopReason = 'deadline';
             break;
           }
 
-          // Race antara pembacaan chunk berikutnya dan abortController
-          // Menjamin stream yang macet/hung langsung berhenti tanpa menunggu tanpa batas
-          let nextResult: IteratorResult<any>;
+          let nextResult: IteratorResult<{ text: string; usageMetadata?: any; finishReason?: string }>;
           try {
             nextResult = await Promise.race([iterator.next(), abortPromise]);
           } catch (raceErr: any) {
             streamStoppedEarly = true;
-            if (abortController.signal.aborted || raceErr?.message?.includes('DEADLINE_EXCEEDED')) {
+            if (
+              isClientCancelled ||
+              abortController.signal.aborted ||
+              raceErr?.message?.includes('DEADLINE_EXCEEDED')
+            ) {
               stopReason = 'deadline';
             } else {
               stopReason = 'error';
+              console.warn(
+                `[generateStream] Koneksi stream terputus pada ${accumulatedText.length} karakter:`,
+                raceErr?.message || raceErr
+              );
             }
             break;
           }
 
           if (nextResult.done) {
-            isFullyCompleted = true;
+            if (accumulatedText.trim().length > 0) {
+              isFullyCompleted = true;
+            } else {
+              streamStoppedEarly = true;
+              stopReason = 'error';
+              console.warn('[generateStream] Stream ditutup tanpa konten teks.');
+            }
             break;
           }
 
           const chunk = nextResult.value;
-          // Simpan metadata penggunaan token dari SDK jika tersedia
           if (chunk?.usageMetadata) {
             latestUsageMetadata = chunk.usageMetadata;
           }
@@ -398,36 +529,77 @@ export async function generateStream(
         }
       } catch (loopErr: any) {
         streamStoppedEarly = true;
-        stopReason = 'error';
+        stopReason = isClientCancelled || abortController.signal.aborted ? 'deadline' : 'error';
+        console.warn(
+          `[generateStream] Loop stream terhenti pada ${accumulatedText.length} karakter:`,
+          loopErr?.message || loopErr
+        );
       } finally {
-        clearTimeout(deadlineTimer);
         if (typeof iterator.return === 'function') {
           try {
-            await iterator.return();
+            await iterator.return(undefined);
           } catch {
             // Abaikan kesalahan penutupan generator internal
           }
         }
       }
 
-      // Hitung token: gunakan metadata token resmi dari respons SDK bila tersedia.
-      // Bila stream terhenti sebelum metadata akhir tiba, gunakan estimasi rasio standar Gemini (~4 karakter per token).
+      let recoveredTokensIn = 0;
+      let recoveredTokensOut = 0;
+
+      // Bila terhenti karena gangguan koneksi/SSE mid-stream (bukan pembatalan/deadline),
+      // pulihkan sisa jawaban secara otomatis lewat panggilan non-stream sebelum menutup stream.
+      if (
+        streamStoppedEarly &&
+        stopReason === 'error' &&
+        !isClientCancelled &&
+        !abortController.signal.aborted
+      ) {
+        const remainingForRecovery = totalDeadlineMs - (Date.now() - startTime);
+        if (remainingForRecovery > 5000) {
+          const recovered = await recoverInterruptedStream({
+            model,
+            systemInstruction,
+            renderedPromptText: rendered.promptText,
+            temperature,
+            accumulatedText,
+            remainingTimeMs: remainingForRecovery,
+            abortSignal: abortController.signal,
+            abortPromise,
+          });
+
+          if (recovered && !isClientCancelled && !abortController.signal.aborted) {
+            accumulatedText += recovered.appendText;
+            controller.enqueue(encoder.encode(recovered.appendText));
+            recoveredTokensIn = recovered.tokensIn;
+            recoveredTokensOut = recovered.tokensOut;
+            streamStoppedEarly = false;
+            stopReason = null;
+            isFullyCompleted = true;
+          }
+        }
+      }
+
+      clearTimeout(deadlineTimer);
+
+      if (isClientCancelled) {
+        return;
+      }
+
       const tokensIn =
-        latestUsageMetadata?.promptTokenCount ?? Math.ceil(rendered.promptText.length / 4);
+        (latestUsageMetadata?.promptTokenCount ?? Math.ceil(rendered.promptText.length / 4)) +
+        recoveredTokensIn;
       const tokensOut =
-        latestUsageMetadata?.candidatesTokenCount ?? Math.max(1, Math.ceil(accumulatedText.length / 4));
+        (latestUsageMetadata?.candidatesTokenCount ??
+          Math.max(1, Math.ceil(accumulatedText.length / 4))) + recoveredTokensOut;
 
       if (streamStoppedEarly || !isFullyCompleted) {
-        // KASUS PARSIAL: Terpotong karena deadline atau error di tengah stream
-        // 1. Kirim penanda teks di akhir stream agar pembaca/klien mengetahui bahwa hasil tidak lengkap
         const marker =
           stopReason === 'deadline'
             ? '\n\n[TRUNCATED: Batas waktu pemrosesan AI tercapai. Hasil terpotong.]'
             : '\n\n[TRUNCATED: Terjadi gangguan koneksi pemrosesan AI. Hasil terpotong.]';
         controller.enqueue(encoder.encode(marker));
 
-        // 2. JANGAN simpan teks parsial ke generations cache!
-        // Tetap perbarui token di baris reservasi usage_log untuk token yang sempat terpakai
         if (handlers?.onPartial) {
           try {
             await handlers.onPartial(accumulatedText, tokensIn, tokensOut, stopReason || 'deadline');
@@ -442,10 +614,8 @@ export async function generateStream(
           }
         }
 
-        // 3. Tutup stream dengan rapi
         controller.close();
       } else {
-        // KASUS NORMAL: Stream selesai sepenuhnya
         if (handlers?.onBeforeClose) {
           try {
             await handlers.onBeforeClose(accumulatedText, tokensIn, tokensOut);
@@ -457,10 +627,10 @@ export async function generateStream(
       }
     },
     async cancel(reason) {
+      isClientCancelled = true;
       clearTimeout(deadlineTimer);
-      abortController.abort();
+      abortController.abort(reason);
       if (!isFullyCompleted) {
-        // Estimasi token saat pembatalan dini oleh klien
         const tokensIn =
           latestUsageMetadata?.promptTokenCount ?? Math.ceil(rendered.promptText.length / 4);
         const tokensOut =

@@ -193,9 +193,18 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
 
   const handleRequestDeepExplain = async (item: QuizExplanationData, mode: ExplanationMode) => {
     const cacheKey = buildDeepExplainKey(item.pertanyaan, item.userAnswer, mode);
-    if (deepExplanations[cacheKey]) return;
+    const prevEntry = deepExplanations[cacheKey];
+    if (prevEntry && !prevEntry.isTruncated) return;
 
+    const shouldRegenerate = Boolean(prevEntry?.isTruncated);
     const qErrorKey = buildQuestionErrorKey(item.pertanyaan, item.userAnswer);
+    if (shouldRegenerate) {
+      setDeepExplanations((prev) => {
+        const next = { ...prev };
+        delete next[cacheKey];
+        return next;
+      });
+    }
     setDeepErrors((prev) => {
       const next = { ...prev };
       delete next[qErrorKey];
@@ -220,6 +229,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
           moduleId,
           feature: 'quiz_explain',
           stream: true,
+          ...(shouldRegenerate ? { regenerate: true } : {}),
           params: {
             question: item.pertanyaan.trim().slice(0, 990),
             quizOptions: {
@@ -254,9 +264,18 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         },
       });
 
-      const markdown = (streamResult.text || '').trim();
+      const rawMarkdown = (streamResult.text || '').trim();
+      const isTruncated = /\[TRUNCATED:[^\]]*\]/.test(rawMarkdown);
+      const markdown = isTruncated
+        ? rawMarkdown.replace(/\n*\[TRUNCATED:[^\]]*\]\s*/g, '').trim()
+        : rawMarkdown;
+
       if (!markdown) {
-        throw new Error('Respons penjelasan lanjutan kosong.');
+        throw new Error(
+          isTruncated
+            ? 'Koneksi pemrosesan AI terputus di tengah jalan. Silakan coba lagi.'
+            : 'Respons penjelasan lanjutan kosong.'
+        );
       }
 
       setDeepExplanations((prev) => ({
@@ -264,6 +283,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         [cacheKey]: {
           markdown,
           mode,
+          isTruncated,
           usedChapters:
             streamResult.usedChapters || streamResult.rawJson?.result?.usedChapters,
         },

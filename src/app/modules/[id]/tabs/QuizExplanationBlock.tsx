@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Check,
   ChevronUp,
+  RefreshCw,
 } from 'lucide-react';
 import FormattedContent from '@/components/FormattedContent';
 
@@ -31,6 +32,7 @@ export interface QuizExplanationData {
 export interface DeepExplainEntry {
   markdown: string;
   mode: ExplanationMode;
+  isTruncated?: boolean;
   usedChapters?: Array<{ position: number; chapter_title: string }>;
 }
 
@@ -131,7 +133,8 @@ export default function QuizExplanationBlock({
   const handleSelectMode = async (mode: ExplanationMode) => {
     setActiveDeepMode(mode);
     const cacheKey = buildDeepExplainKey(item.pertanyaan, item.userAnswer, mode);
-    if (!deepCache[cacheKey]) {
+    const existing = deepCache[cacheKey];
+    if (!existing || existing.isTruncated) {
       await onRequestDeepExplain(item, mode);
     }
   };
@@ -234,7 +237,7 @@ export default function QuizExplanationBlock({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {(['modul', 'luar_modul', 'keduanya'] as ExplanationMode[]).map((mode) => {
               const key = buildDeepExplainKey(item.pertanyaan, item.userAnswer, mode);
-              const isCached = Boolean(deepCache[key]);
+              const isCached = Boolean(deepCache[key] && !deepCache[key].isTruncated);
               const isLoadingThis = loadingKey === key;
               const isSelected = activeDeepMode === mode;
 
@@ -329,6 +332,21 @@ export default function QuizExplanationBlock({
               </div>
 
               <FormattedContent content={activeEntry.markdown} className="text-xs" />
+
+              {activeEntry.isTruncated && (
+                <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-800 dark:text-amber-200">
+                  <span>Koneksi terputus sebelum penjelasan selesai penuh.</span>
+                  <button
+                    type="button"
+                    disabled={isAnyModeLoadingForThisQuestion}
+                    onClick={() => onRequestDeepExplain(item, activeEntry.mode)}
+                    className="inline-flex items-center gap-1.5 font-semibold px-2.5 py-1 rounded-md bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/60 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-100 transition disabled:opacity-60"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Muat Ulang</span>
+                  </button>
+                </div>
+              )}
 
               {activeEntry.usedChapters &&
                 activeEntry.usedChapters.length > 0 &&
