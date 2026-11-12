@@ -17,6 +17,9 @@ import { getDailyQuotaLimit, getUserDailyQuotaLimit } from '../quota.ts';
 // Konstanta batas ukuran materi untuk fitur QA seluruh modul (60.000 karakter / ~15.000 token)
 export const QA_FULL_MODULE_CHAR_LIMIT = 60000;
 
+// Fitur yang mendukung streaming respons teks/markdown langsung ke klien
+const STREAMABLE_FEATURES = new Set(['qa', 'summary', 'summary_short', 'quiz_explain', 'mnemonic']);
+
 // Helper merangkai jendela cuplikan modul terfokus agar pendalaman 1 soal tetap cepat (< 8.000 karakter)
 function extractFocusedExcerpt(text: string, query: string, maxChars: number): string {
   if (!text || text.length <= maxChars) return text || '';
@@ -242,13 +245,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       const cachedUsedChapters = (cachedGen.result as any)?.usedChapters;
 
       // Jika mode stream diminta dan cache hit, kembalikan juga sebagai stream teks dengan header X-Cache: HIT
-      if (
-        body.stream &&
-        (body.feature === 'qa' ||
-          body.feature === 'summary' ||
-          body.feature === 'summary_short' ||
-          body.feature === 'quiz_explain')
-      ) {
+      if (body.stream && STREAMABLE_FEATURES.has(body.feature)) {
         const textContent =
           body.feature === 'qa'
             ? (cachedGen.result as any)?.answer || ''
@@ -422,14 +419,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     );
   }
 
-  // 7. Mode Streaming untuk QA, Ringkasan, dan Penjelasan Lanjutan Kuis
-  if (
-    body.stream &&
-    (body.feature === 'qa' ||
-      body.feature === 'summary' ||
-      body.feature === 'summary_short' ||
-      body.feature === 'quiz_explain')
-  ) {
+  // 7. Mode Streaming untuk QA, Ringkasan, Mnemonic, dan Penjelasan Lanjutan Kuis
+  if (body.stream && STREAMABLE_FEATURES.has(body.feature)) {
     let streamQuizExplainMeta: { expMode: 'modul' | 'luar_modul' | 'keduanya'; isCorrect: boolean } | null = null;
     let streamVariables: Record<string, any>;
 
@@ -437,6 +428,11 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       streamVariables = { pertanyaan: body.params.question || '', modul: moduleContent };
     } else if (body.feature === 'summary_short') {
       streamVariables = { maks_poin: body.params.maxPoints, modul: moduleContent };
+    } else if (body.feature === 'mnemonic') {
+      streamVariables = {
+        topik: body.params.topic || 'Daftar konsep dan istilah penting',
+        modul: moduleContent,
+      };
     } else if (body.feature === 'quiz_explain') {
       const built = buildQuizExplainPayload(body.params, moduleContent);
       if (!built.isValid) {
@@ -494,7 +490,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                     isCorrect: streamQuizExplainMeta.isCorrect,
                     ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
                   }
-                : { markdown: fullText };
+                : { markdown: fullText, ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}) };
             try {
               await deps.saveGeneration({
                 user_id: user.id,

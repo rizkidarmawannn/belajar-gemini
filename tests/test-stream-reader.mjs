@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   readApiResponse,
+  parseErrorResponse,
   cleanDisplayText,
   formatFriendlyErrorMessage,
 } from '../src/lib/learning/api-stream-reader.ts';
@@ -295,4 +296,38 @@ test('sse-stream: trimContinuationOverlap menghapus pengulangan ujung tanpa memo
     trimContinuationOverlap(prefix, '*) — yaitu kondisi ketika keterampilan belum sesuai.'),
     '*) — yaitu kondisi ketika keterampilan belum sesuai.'
   );
+});
+
+test('api-stream-reader: parseErrorResponse menangani JSON error dan HTML gateway 502/503/504 dengan aman', async () => {
+  const jsonErrRes = new Response(JSON.stringify({ error: 'Kuota harian habis.' }), {
+    status: 429,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  assert.equal(await parseErrorResponse(jsonErrRes), 'Kuota harian habis.');
+
+  const html504Res = new Response('<html><body>504 Gateway Time-out</body></html>', {
+    status: 504,
+    headers: { 'Content-Type': 'text/html' },
+  });
+  assert.match(await parseErrorResponse(html504Res), /504 Gateway Timeout/);
+
+  const html503Res = new Response('<html>Service Unavailable</html>', {
+    status: 503,
+    headers: { 'Content-Type': 'text/html' },
+  });
+  assert.match(await parseErrorResponse(html503Res), /sibuk \(503\)/i);
+});
+
+test('api-stream-reader: formatFriendlyErrorMessage mengenali 503 high demand dan HTML JSON parse SyntaxError', () => {
+  const overloaded = formatFriendlyErrorMessage(new Error('503 high demand temporary'));
+  assert.match(overloaded.message, /kepadatan sementara/i);
+  assert.equal(overloaded.isTimeout, false);
+
+  const gwTimeout = formatFriendlyErrorMessage(new Error('Waktu server habis (504 Gateway Timeout).'));
+  assert.equal(gwTimeout.isTimeout, true);
+
+  const htmlParseErr = formatFriendlyErrorMessage(
+    new SyntaxError(`Unexpected token '<', "<html>..." is not valid JSON`)
+  );
+  assert.match(htmlParseErr.message, /respons yang tidak lengkap/i);
 });

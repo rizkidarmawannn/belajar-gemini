@@ -15,7 +15,7 @@ interface Chunk {
 interface QATabProps {
   moduleId: string;
   chunks: Chunk[];
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 export default function QATab({ moduleId, chunks, onError }: QATabProps) {
@@ -27,8 +27,8 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
   const [isAsking, setIsAsking] = useState(false);
   const [qaCopied, setQaCopied] = useState(false);
 
-  const handleAskQuestion = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAskQuestion = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!question.trim()) return;
 
     setIsAsking(true);
@@ -68,7 +68,7 @@ export default function QATab({ moduleId, chunks, onError }: QATabProps) {
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, () => handleAskQuestion());
       }
     } finally {
       setIsAsking(false);

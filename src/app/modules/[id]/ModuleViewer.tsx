@@ -55,12 +55,31 @@ export default function ModuleViewer({
   >('chapters');
   const [selectedChapter, setSelectedChapter] = useState<number | 'all'>('all');
   const [errorMessage, setErrorMessage] = useState('');
+  const [retryAction, setRetryAction] = useState<(() => void) | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  const handleError = (msg: string, retryFn?: () => void) => {
+    setErrorMessage(msg);
+    setRetryAction(msg && retryFn ? () => retryFn : null);
+  };
+
+  const clearError = () => {
+    setErrorMessage('');
+    setRetryAction(null);
+  };
+
+  const handleRetryError = () => {
+    const fn = retryAction;
+    clearError();
+    if (fn) {
+      fn();
+    }
+  };
+
   const handleDeleteModule = async () => {
     setIsDeleting(true);
-    setErrorMessage('');
+    clearError();
     try {
       const res = await fetch(`/api/modules/${module.id}`, {
         method: 'DELETE',
@@ -77,7 +96,7 @@ export default function ModuleViewer({
       router.push('/');
       router.refresh();
     } catch (err: any) {
-      setErrorMessage(err.message || 'Terjadi kesalahan saat menghapus modul.');
+      handleError(err.message || 'Terjadi kesalahan saat menghapus modul.');
       setIsDeleting(false);
       setShowDeleteConfirm(false);
     }
@@ -229,14 +248,16 @@ export default function ModuleViewer({
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            {retryAction && (
+              <button
+                onClick={handleRetryError}
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-sm transition"
+              >
+                Coba Lagi
+              </button>
+            )}
             <button
-              onClick={() => setErrorMessage('')}
-              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shadow-sm transition"
-            >
-              Coba Lagi
-            </button>
-            <button
-              onClick={() => setErrorMessage('')}
+              onClick={clearError}
               className="px-2.5 py-1.5 rounded-lg border border-rose-300 dark:border-rose-800 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/40 transition"
             >
               Tutup
@@ -262,7 +283,7 @@ export default function ModuleViewer({
           chunks={chunks}
           selectedChapter={selectedChapter}
           onSelectChapter={setSelectedChapter}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 
@@ -270,7 +291,7 @@ export default function ModuleViewer({
         <FlashcardsTab
           moduleId={module.id}
           initialCards={initialFlashcards}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 
@@ -278,7 +299,7 @@ export default function ModuleViewer({
         <QuizTab
           moduleId={module.id}
           initialAttempts={initialQuizAttempts}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 
@@ -286,7 +307,7 @@ export default function ModuleViewer({
         <QATab
           moduleId={module.id}
           chunks={chunks}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 
@@ -294,14 +315,14 @@ export default function ModuleViewer({
         <MnemonicTab
           moduleId={module.id}
           chunks={chunks}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 
       {activeTab === 'essay' && (
         <EssayTab
           moduleId={module.id}
-          onError={setErrorMessage}
+          onError={handleError}
         />
       )}
 

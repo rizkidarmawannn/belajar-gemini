@@ -2,11 +2,11 @@
 
 import { useState } from 'react';
 import { PenTool, Loader2, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
-import { formatFriendlyErrorMessage } from '@/lib/learning/api-stream-reader';
+import { formatFriendlyErrorMessage, parseErrorResponse } from '@/lib/learning/api-stream-reader';
 
 interface EssayTabProps {
   moduleId: string;
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 export default function EssayTab({ moduleId, onError }: EssayTabProps) {
@@ -15,8 +15,8 @@ export default function EssayTab({ moduleId, onError }: EssayTabProps) {
   const [essayResult, setEssayResult] = useState<any>(null);
   const [isEvaluatingEssay, setIsEvaluatingEssay] = useState(false);
 
-  const handleEvaluateEssay = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleEvaluateEssay = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!essayQuestion.trim() || !essayAnswer.trim()) return;
 
     setIsEvaluatingEssay(true);
@@ -38,8 +38,7 @@ export default function EssayTab({ moduleId, onError }: EssayTabProps) {
       });
 
       if (!response.ok) {
-        const errJson = await response.json();
-        throw new Error(errJson.error || 'Gagal mengevaluasi jawaban esai.');
+        throw new Error(await parseErrorResponse(response, 'Gagal mengevaluasi jawaban esai.'));
       }
 
       const json = await response.json();
@@ -47,7 +46,7 @@ export default function EssayTab({ moduleId, onError }: EssayTabProps) {
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, () => handleEvaluateEssay());
       }
     } finally {
       setIsEvaluatingEssay(false);

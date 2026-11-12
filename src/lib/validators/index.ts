@@ -159,6 +159,165 @@ export function cleanAndParseJson(rawText: string): any {
 
 export type QuizDifficultyOption = 'mudah' | 'sedang' | 'sulit' | 'campuran';
 
+function normalizeDifficultyLabel(raw: unknown): 'mudah' | 'sedang' | 'sulit' | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === 'mudah' || v === 'easy' || v === 'dasar' || v === 'rendah') return 'mudah';
+  if (v === 'sedang' || v === 'medium' || v === 'menengah') return 'sedang';
+  if (v === 'sulit' || v === 'hard' || v === 'tinggi' || v === 'sukar' || v === 'hots') return 'sulit';
+  return undefined;
+}
+
+function normalizeQuizOptionKey(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  const cleaned = raw.trim().toUpperCase().replace(/^OPSI\s+|^JAWABAN\s+/, '');
+  const match = cleaned.match(/^([ABCD])(?:[\s.):]|$)/);
+  return match ? match[1] : raw;
+}
+
+function normalizeQuizOptionsObject(rawOpsi: any): any {
+  if (Array.isArray(rawOpsi) && rawOpsi.length >= 4) {
+    return {
+      A: String(rawOpsi[0] ?? '').trim(),
+      B: String(rawOpsi[1] ?? '').trim(),
+      C: String(rawOpsi[2] ?? '').trim(),
+      D: String(rawOpsi[3] ?? '').trim(),
+    };
+  }
+  if (!rawOpsi || typeof rawOpsi !== 'object') return rawOpsi;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawOpsi)) {
+    const upperKey = k.trim().toUpperCase().slice(0, 1);
+    if (upperKey === 'A' || upperKey === 'B' || upperKey === 'C' || upperKey === 'D') {
+      out[upperKey] = typeof v === 'string' ? v.trim() : String(v ?? '');
+    }
+  }
+  return out;
+}
+
+export function normalizeQuizPayload(raw: unknown): unknown {
+  if (Array.isArray(raw)) {
+    raw = { soal: raw };
+  }
+  if (!raw || typeof raw !== 'object') return raw;
+  const obj: any = raw;
+  const container = obj.quiz && typeof obj.quiz === 'object' ? obj.quiz : obj.data && typeof obj.data === 'object' ? obj.data : obj;
+  const rawList = Array.isArray(container.soal)
+    ? container.soal
+    : Array.isArray(container.questions)
+    ? container.questions
+    : Array.isArray(container.items)
+    ? container.items
+    : null;
+
+  if (!rawList) return raw;
+
+  return {
+    ...container,
+    soal: rawList.map((item: any) => {
+      if (!item || typeof item !== 'object') return item;
+      const parsedNum =
+        typeof item.nomor === 'string' && /^\d+$/.test(item.nomor.trim())
+          ? Number(item.nomor.trim())
+          : item.nomor;
+      const normDiff = normalizeDifficultyLabel(item.tingkat ?? item.difficulty ?? item.level);
+      const normSource =
+        typeof item.sumber_penjelasan === 'string'
+          ? item.sumber_penjelasan.trim().toLowerCase()
+          : item.sumber_penjelasan;
+
+      return {
+        ...item,
+        ...(parsedNum !== undefined ? { nomor: parsedNum } : {}),
+        pertanyaan: typeof item.pertanyaan === 'string' ? item.pertanyaan.trim() : item.pertanyaan,
+        opsi: normalizeQuizOptionsObject(item.opsi ?? item.options ?? item.pilihan),
+        kunci: normalizeQuizOptionKey(item.kunci ?? item.jawaban ?? item.answer),
+        ...(normDiff ? { tingkat: normDiff } : {}),
+        ...(normSource === 'modul' || normSource === 'luar_modul' || normSource === 'keduanya'
+          ? { sumber_penjelasan: normSource }
+          : { sumber_penjelasan: undefined }),
+      };
+    }),
+  };
+}
+
+export function normalizeFlashcardPayload(raw: unknown): unknown {
+  if (Array.isArray(raw)) {
+    raw = { kartu: raw };
+  }
+  if (!raw || typeof raw !== 'object') return raw;
+  const obj: any = raw;
+  const container = obj.data && typeof obj.data === 'object' ? obj.data : obj;
+  const rawList = Array.isArray(container.kartu)
+    ? container.kartu
+    : Array.isArray(container.cards)
+    ? container.cards
+    : Array.isArray(container.flashcards)
+    ? container.flashcards
+    : Array.isArray(container.items)
+    ? container.items
+    : null;
+
+  if (!rawList) return raw;
+
+  return {
+    ...container,
+    kartu: rawList.map((c: any) => {
+      if (!c || typeof c !== 'object') return c;
+      const normDiff = normalizeDifficultyLabel(c.tingkat ?? c.level ?? c.difficulty);
+      return {
+        ...c,
+        depan: String(c.depan ?? c.front ?? '').trim(),
+        belakang: String(c.belakang ?? c.back ?? '').trim(),
+        bab: String(c.bab ?? c.chapter ?? 'Umum').trim() || 'Umum',
+        ...(normDiff ? { tingkat: normDiff } : {}),
+      };
+    }),
+  };
+}
+
+function coerceStringArray(val: unknown): string[] {
+  if (Array.isArray(val)) {
+    return val.map((v) => String(v ?? '').trim()).filter(Boolean);
+  }
+  if (typeof val === 'string' && val.trim().length > 0) {
+    return [val.trim()];
+  }
+  return [];
+}
+
+export function normalizeEssayEvalPayload(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const obj: any = raw;
+  const src =
+    obj.evaluasi && typeof obj.evaluasi === 'object'
+      ? obj.evaluasi
+      : obj.result && typeof obj.result === 'object'
+      ? obj.result
+      : obj;
+
+  const rincian = src.rincian && typeof src.rincian === 'object' ? src.rincian : {};
+  const toNum = (v: unknown, fallback = 0) => {
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  return {
+    ...src,
+    skor: Math.min(100, Math.max(0, toNum(src.skor, 0))),
+    rincian: {
+      ketepatan: Math.min(50, Math.max(0, toNum(rincian.ketepatan, 0))),
+      kelengkapan: Math.min(30, Math.max(0, toNum(rincian.kelengkapan, 0))),
+      kejelasan: Math.min(20, Math.max(0, toNum(rincian.kejelasan, 0))),
+    },
+    sudah_benar: coerceStringArray(src.sudah_benar),
+    keliru: coerceStringArray(src.keliru),
+    terlewat: coerceStringArray(src.terlewat),
+    jawaban_ideal: typeof src.jawaban_ideal === 'string' ? src.jawaban_ideal.trim() : src.jawaban_ideal,
+    saran: typeof src.saran === 'string' ? src.saran.trim() : src.saran,
+  };
+}
+
 /**
  * Validasi dan kurasi butir soal kuis:
  * - Memastikan opsi A, B, C, D tidak ada yang kembar/duplikat teks
@@ -171,7 +330,7 @@ export function validateAndSanitizeQuiz(
   raw: unknown,
   expectedDifficulty?: QuizDifficultyOption
 ): QuizData {
-  const parsed = QuizSchema.parse(raw);
+  const parsed = QuizSchema.parse(normalizeQuizPayload(raw));
 
   const seenQuestions = new Set<string>();
   const validSoal: QuizItem[] = [];
@@ -242,7 +401,7 @@ export function validateAndSanitizeQuiz(
  * - Membuang kartu dengan bagian depan duplikat
  */
 export function validateAndSanitizeFlashcards(raw: unknown): FlashcardData {
-  const parsed = FlashcardSchema.parse(raw);
+  const parsed = FlashcardSchema.parse(normalizeFlashcardPayload(raw));
 
   const seenFronts = new Set<string>();
   const validCards: FlashcardItem[] = [];
@@ -267,7 +426,7 @@ export function validateAndSanitizeFlashcards(raw: unknown): FlashcardData {
  * Validasi hasil evaluasi esai
  */
 export function validateEssayEvaluation(raw: unknown): EssayEvalData {
-  return EssayEvalSchema.parse(raw);
+  return EssayEvalSchema.parse(normalizeEssayEvalPayload(raw));
 }
 
 /**

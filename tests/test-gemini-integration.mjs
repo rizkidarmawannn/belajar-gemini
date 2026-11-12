@@ -2,10 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'crypto';
 import { renderPrompt, sanitizeModuleContent } from '../src/lib/gemini/render-prompt.ts';
-import { getModelName } from '../src/lib/gemini/client.ts';
-import { calculateEffectiveTimeout } from '../src/lib/gemini/generate.ts';
+import { getModelName, getModelCandidates } from '../src/lib/gemini/client.ts';
+import { calculateEffectiveTimeout, formatFriendlyErrorMessage } from '../src/lib/gemini/generate.ts';
 import {
   cleanAndParseJson,
+  normalizeQuizPayload,
+  normalizeFlashcardPayload,
+  normalizeEssayEvalPayload,
   validateAndSanitizeQuiz,
   validateAndSanitizeFlashcards,
   validateEssayEvaluation,
@@ -846,4 +849,160 @@ test('Route Handler ASLI: Permintaan POST /api/generate melebihi 64 KB ditolak d
   assert.match(json.error, /melebihi batas maksimum/i);
   assert.equal(deps._getGeminiCalls(), 0);
   assert.equal(deps._getUsageRecords().length, 0);
+});
+
+// ==================== 12. TEST MODEL FALLBACK, NORMALISASI & STREAM MNEMONIC ====================
+
+test('getModelCandidates: menyusun daftar kandidat model utama + fallback sehat Flash tanpa duplikasi', () => {
+  const origModel = process.env.GEMINI_MODEL;
+  const origFallbacks = process.env.GEMINI_FALLBACK_MODELS;
+  const origDisable = process.env.GEMINI_DISABLE_MODEL_FALLBACK;
+  try {
+    process.env.GEMINI_MODEL = 'gemini-3.5-flash-lite';
+    delete process.env.GEMINI_FALLBACK_MODELS;
+    delete process.env.GEMINI_DISABLE_MODEL_FALLBACK;
+
+    const list = getModelCandidates();
+    assert.equal(list[0], 'gemini-3.5-flash-lite');
+    assert.ok(list.includes('gemini-3.1-flash-lite'));
+    assert.ok(list.includes('gemini-3.5-flash'));
+    assert.equal(new Set(list).size, list.length);
+
+    process.env.GEMINI_FALLBACK_MODELS = 'gemini-3.5-flash, gemini-3.1-flash-lite';
+    const customList = getModelCandidates();
+    assert.deepEqual(customList, [
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
+    ]);
+
+    process.env.GEMINI_DISABLE_MODEL_FALLBACK = 'true';
+    delete process.env.GEMINI_FALLBACK_MODELS;
+    assert.deepEqual(getModelCandidates(), ['gemini-3.5-flash-lite']);
+  } finally {
+    if (origModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = origModel;
+    if (origFallbacks === undefined) delete process.env.GEMINI_FALLBACK_MODELS;
+    else process.env.GEMINI_FALLBACK_MODELS = origFallbacks;
+    if (origDisable === undefined) delete process.env.GEMINI_DISABLE_MODEL_FALLBACK;
+    else process.env.GEMINI_DISABLE_MODEL_FALLBACK = origDisable;
+  }
+});
+
+test('generate.ts -> formatFriendlyErrorMessage memetakan 503/high demand, 502/504, dan ZodError ke pesan ramah', () => {
+  assert.match(
+    formatFriendlyErrorMessage(new Error('got status: 503 Service Unavailable - high demand')),
+    /lonjakan trafik sementara/i
+  );
+  assert.match(
+    formatFriendlyErrorMessage(new Error('HTTP 504 Gateway Timeout')),
+    /melewati batas waktu/i
+  );
+  const zodErr = new Error('Invalid input');
+  zodErr.name = 'ZodError';
+  assert.match(formatFriendlyErrorMessage(zodErr), /belum sesuai struktur/i);
+  assert.match(
+    formatFriendlyErrorMessage(new Error('Respons model kosong dari Gemini')),
+    /belum sesuai struktur/i
+  );
+});
+
+test('validators: normalisasi variasi format kuis, flashcard, dan esai tetap lolos sambil menjaga tingkat kesulitan ketat', () => {
+  const rawQuiz = normalizeQuizPayload({
+    questions: [
+      {
+        nomor: '1',
+        pertanyaan: 'Mengapa pendekatan analisis studi kasus multi-variabel penting dalam evaluasi risiko kerja?',
+        opsi: ['Opsi pertama yang singkat', 'Opsi kedua yang tepat', 'Opsi ketiga cukup jelas', 'Opsi keempat pembanding'],
+        kunci: 'Opsi B.',
+        penjelasan: 'Karena evaluasi risiko menuntut sintesis dampak silang antar unit sebelum menetapkan kontrol mitigasi.',
+        bab: 'Bab 2',
+        tingkat: 'Sulit',
+      },
+      {
+        nomor: '2',
+        pertanyaan: 'Apa kepanjangan K3 dalam konteks manajemen risiko kerja dasar?',
+        opsi: ['Opsi A dasar', 'Opsi B dasar', 'Opsi C dasar', 'Opsi D dasar'],
+        kunci: 'A',
+        penjelasan: 'Keselamatan dan Kesehatan Kerja.',
+        bab: 'Bab 1',
+        tingkat: 'Mudah',
+      },
+    ],
+  });
+  assert.ok(rawQuiz && typeof rawQuiz === 'object');
+
+  const validatedQuiz = validateAndSanitizeQuiz(rawQuiz, 'sulit');
+  assert.equal(validatedQuiz.soal.length, 1);
+  assert.equal(validatedQuiz.soal[0].kunci, 'B');
+  assert.equal(validatedQuiz.soal[0].tingkat, 'sulit');
+
+  const rawCards = normalizeFlashcardPayload({
+    cards: [
+      {
+        front: 'Apa tujuan utama sistem pengendalian K3 terpadu?',
+        back: 'Mencegah kecelakaan kerja dan penyakit akibat kerja secara sistematis dan terukur.',
+        chapter: 'Bab 1',
+        level: 'Mudah',
+      },
+    ],
+  });
+  assert.ok(rawCards && typeof rawCards === 'object');
+  const validatedCards = validateAndSanitizeFlashcards(rawCards);
+  assert.equal(validatedCards.kartu.length, 1);
+  assert.equal(validatedCards.kartu[0].tingkat, 'mudah');
+
+  const rawEssay = normalizeEssayEvalPayload({
+    skor: '86',
+    rincian: { ketepatan: '43', kelengkapan: '25', kejelasan: '18' },
+    sudah_benar: 'Konsep inti sudah tepat',
+    keliru: [],
+    terlewat: ['Contoh penerapan lapangan'],
+    jawaban_ideal: 'Jawaban ideal menjelaskan prinsip dan contoh nyata.',
+    saran: 'Tambahkan studi kasus singkat.',
+  });
+  const validatedEssay = validateEssayEvaluation(rawEssay);
+  assert.equal(validatedEssay.skor, 86);
+  assert.equal(validatedEssay.sudah_benar.length, 1);
+});
+
+test('Route Handler ASLI: mnemonic mendukung mode streaming MISS dan HIT cache tanpa duplikasi kuota', async () => {
+  const deps = createMockDeps({
+    async callGeminiStream(opts, handlers) {
+      assert.equal(opts.promptName, 'mnemonic');
+      const fullText = '### Jembatan Keledai\n**K3** = Keselamatan, Kesehatan, Kerja.';
+      return new ReadableStream({
+        async start(ctrl) {
+          ctrl.enqueue(new TextEncoder().encode(fullText));
+          if (handlers?.onBeforeClose) {
+            await handlers.onBeforeClose(fullText, 50, 25);
+          }
+          ctrl.close();
+        },
+      });
+    },
+  });
+
+  // 1. Streaming MISS
+  const resMiss = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'mnemonic',
+    stream: true,
+    params: { topic: 'Prinsip K3' },
+  });
+  assert.equal(resMiss.status, 200);
+  assert.equal(resMiss.headers.get('X-Cache'), 'MISS');
+  assert.equal(await resMiss.text(), '### Jembatan Keledai\n**K3** = Keselamatan, Kesehatan, Kerja.');
+  assert.equal(deps._getCacheMap().size, 1);
+
+  // 2. Streaming HIT
+  const resHit = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'mnemonic',
+    stream: true,
+    params: { topic: 'Prinsip K3' },
+  });
+  assert.equal(resHit.status, 200);
+  assert.equal(resHit.headers.get('X-Cache'), 'HIT');
+  assert.equal(await resHit.text(), '### Jembatan Keledai\n**K3** = Keselamatan, Kesehatan, Kerja.');
 });

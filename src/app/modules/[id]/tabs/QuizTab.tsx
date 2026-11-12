@@ -14,7 +14,11 @@ import {
   Globe,
   Layers,
 } from 'lucide-react';
-import { formatFriendlyErrorMessage, readApiResponse } from '@/lib/learning/api-stream-reader';
+import {
+  formatFriendlyErrorMessage,
+  parseErrorResponse,
+  readApiResponse,
+} from '@/lib/learning/api-stream-reader';
 import QuizExplanationBlock, {
   type ExplanationMode,
   type QuizExplanationData,
@@ -51,7 +55,7 @@ interface QuizAttempt {
 interface QuizTabProps {
   moduleId: string;
   initialAttempts: QuizAttempt[];
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 const SETUP_EXPLANATION_OPTIONS: Array<{
@@ -124,18 +128,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       });
 
       if (!response.ok) {
-        let errorMsg = 'Gagal membuat kuis AI.';
-        try {
-          const errJson = await response.json();
-          errorMsg = errJson.error || errorMsg;
-        } catch {
-          if (response.status === 504 || response.status === 502) {
-            errorMsg = 'Waktu serverless habis (Gateway Timeout). Mohon coba lagi.';
-          } else {
-            errorMsg = `Server merespons status ${response.status}.`;
-          }
-        }
-        throw new Error(errorMsg);
+        throw new Error(await parseErrorResponse(response, 'Gagal membuat kuis AI.'));
       }
 
       let json: any = null;
@@ -154,7 +147,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, handleGenerateQuiz);
       }
     } finally {
       setIsGeneratingQuiz(false);

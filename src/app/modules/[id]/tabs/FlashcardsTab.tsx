@@ -11,7 +11,7 @@ import {
   XCircle,
   CheckCircle2,
 } from 'lucide-react';
-import { formatFriendlyErrorMessage } from '@/lib/learning/api-stream-reader';
+import { formatFriendlyErrorMessage, parseErrorResponse } from '@/lib/learning/api-stream-reader';
 
 interface Flashcard {
   id?: string;
@@ -26,7 +26,7 @@ interface Flashcard {
 interface FlashcardsTabProps {
   moduleId: string;
   initialCards: Flashcard[];
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 export default function FlashcardsTab({ moduleId, initialCards, onError }: FlashcardsTabProps) {
@@ -57,8 +57,7 @@ export default function FlashcardsTab({ moduleId, initialCards, onError }: Flash
       });
 
       if (!response.ok) {
-        const errJson = await response.json();
-        throw new Error(errJson.error || 'Gagal membuat kartu flashcard AI.');
+        throw new Error(await parseErrorResponse(response, 'Gagal membuat kartu flashcard AI.'));
       }
 
       const json = await response.json();
@@ -91,8 +90,7 @@ export default function FlashcardsTab({ moduleId, initialCards, onError }: Flash
           onError(saveJson.message);
         }
       } else {
-        const errJson = await saveRes.json();
-        throw new Error(errJson.error || 'Gagal menyimpan kartu ke database.');
+        throw new Error(await parseErrorResponse(saveRes, 'Gagal menyimpan kartu ke database.'));
       }
 
       setCurrentCardIndex(0);
@@ -100,7 +98,7 @@ export default function FlashcardsTab({ moduleId, initialCards, onError }: Flash
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, handleGenerateFlashcards);
       }
     } finally {
       setIsGeneratingCards(false);

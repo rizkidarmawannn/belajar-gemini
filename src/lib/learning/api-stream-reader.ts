@@ -98,12 +98,78 @@ export function formatFriendlyErrorMessage(err: any): { message: string; isTimeo
     };
   }
 
-  // 4. Pesan error terstruktur dari backend
+  // 4. Gateway / server AI sementara sibuk atau overloaded (502/503/504)
+  const lowerMsg = errMsg.toLowerCase();
+  if (
+    errMsg.includes('503') ||
+    errMsg.includes('502') ||
+    errMsg.includes('504') ||
+    lowerMsg.includes('high demand') ||
+    lowerMsg.includes('unavailable') ||
+    lowerMsg.includes('overloaded') ||
+    lowerMsg.includes('gateway timeout')
+  ) {
+    return {
+      message:
+        errMsg.includes('Waktu server habis') || errMsg.includes('Layanan AI sedang sibuk')
+          ? errMsg
+          : 'Layanan AI atau server sedang mengalami kepadatan sementara. Silakan klik "Coba Lagi" sesaat lagi.',
+      isTimeout: errMsg.includes('504') || lowerMsg.includes('gateway timeout'),
+      isUserAbort: false,
+    };
+  }
+
+  // 5. Respons HTML/teks tak terduga saat mengharapkan JSON
+  if (
+    errMsg.includes('Unexpected token') ||
+    lowerMsg.includes('not valid json') ||
+    lowerMsg.includes('json.parse')
+  ) {
+    return {
+      message: 'Server mengembalikan respons yang tidak lengkap (kemungkinan sedang sibuk atau waktu habis). Silakan coba lagi.',
+      isTimeout: false,
+      isUserAbort: false,
+    };
+  }
+
+  // 6. Pesan error terstruktur dari backend
   return {
     message: errMsg || 'Terjadi kesalahan sistem saat memproses permintaan AI.',
     isTimeout: false,
     isUserAbort: false,
   };
+}
+
+/**
+ * Membaca pesan error secara aman dari Response HTTP yang gagal (!response.ok).
+ * Menghindari crash JSON parse ketika gateway mengembalikan HTML 502/504.
+ */
+export async function parseErrorResponse(response: Response, fallbackMsg?: string): Promise<string> {
+  const defaultMsg =
+    response.status === 504 || response.status === 502
+      ? 'Waktu server habis (504 Gateway Timeout). Silakan coba lagi sesaat lagi.'
+      : response.status === 503
+      ? 'Layanan AI sedang sibuk (503). Silakan coba lagi beberapa saat lagi.'
+      : fallbackMsg || `Server merespons status ${response.status}.`;
+
+  try {
+    const rawText = await response.text();
+    if (!rawText) return defaultMsg;
+    try {
+      const parsed = JSON.parse(rawText);
+      if (parsed && typeof parsed.error === 'string' && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+      if (parsed && typeof parsed.message === 'string' && parsed.message.trim()) {
+        return parsed.message.trim();
+      }
+    } catch {
+      // Gateway mengembalikan HTML/teks non-JSON
+    }
+    return defaultMsg;
+  } catch {
+    return defaultMsg;
+  }
 }
 
 /**
@@ -117,16 +183,7 @@ export async function readApiResponse(options: ReadApiResponseOptions): Promise<
   }
 
   if (!response.ok) {
-    let errorMsg =
-      response.status === 504 || response.status === 502
-        ? 'Waktu server habis (504 Gateway Timeout). Silakan coba lagi sesaat lagi.'
-        : `Server merespons status ${response.status}.`;
-    try {
-      const errJson = await response.json();
-      errorMsg = errJson.error || errorMsg;
-    } catch {
-      // bukan JSON error (misal HTML 502/504 dari gateway)
-    }
+    const errorMsg = await parseErrorResponse(response);
     throw new Error(errorMsg);
   }
 

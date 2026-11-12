@@ -17,7 +17,7 @@ interface SummaryTabProps {
   chunks: Chunk[];
   selectedChapter: number | 'all';
   onSelectChapter: (chapter: number | 'all') => void;
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 export default function SummaryTab({
@@ -62,7 +62,7 @@ export default function SummaryTab({
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, handleGenerateSummary);
       }
     } finally {
       setIsSummarizing(false);

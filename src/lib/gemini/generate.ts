@@ -1,5 +1,5 @@
 import 'server-only';
-import { getGeminiClient, getModelName, openGeminiSseStream } from './client.ts';
+import { getGeminiClient, getModelCandidates, openGeminiSseStream } from './client.ts';
 import { renderPrompt, type RenderedPrompt } from './render-prompt.ts';
 import { cleanAndParseJson } from '../validators/index.ts';
 import { trimContinuationOverlap } from './sse-stream.ts';
@@ -36,31 +36,58 @@ export function calculateEffectiveTimeout(attemptTimeoutMs: number, remainingTim
   return Math.min(attemptTimeoutMs, Math.max(1000, remainingTimeMs - 2000));
 }
 
-// Cek apakah error merupakan error sementara yang layak di-retry
-function isTransientError(error: any): boolean {
+// Cek apakah error layak dicoba dengan model alternatif (overload, 503, timeout, 404, jaringan)
+function shouldRotateModel(error: any): boolean {
   const msg = (error?.message || '').toLowerCase();
   const status = error?.status || error?.statusCode;
 
   return (
     status === 429 ||
+    status === 404 ||
     status === 500 ||
+    status === 502 ||
     status === 503 ||
+    status === 504 ||
+    msg.includes('503') ||
+    msg.includes('502') ||
+    msg.includes('504') ||
+    msg.includes('500') ||
     msg.includes('429') ||
+    msg.includes('404') ||
+    msg.includes('high demand') ||
+    msg.includes('unavailable') ||
+    msg.includes('overloaded') ||
+    msg.includes('not found') ||
     msg.includes('resource_exhausted') ||
     msg.includes('quota') ||
-    msg.includes('overloaded') ||
-    msg.includes('503') ||
-    msg.includes('500') ||
     msg.includes('timeout') ||
+    msg.includes('headers timeout') ||
+    msg.includes('und_err') ||
     msg.includes('terminated') ||
     msg.includes('econnreset') ||
     msg.includes('socket') ||
     msg.includes('network') ||
     msg.includes('fetch failed') ||
-    msg.includes('other side closed') ||
+    msg.includes('other side closed')
+  );
+}
+
+// Cek apakah error merupakan error sementara yang layak di-retry
+function isTransientError(error: any): boolean {
+  const msg = (error?.message || '').toLowerCase();
+  const name = (error?.name || '').toLowerCase();
+
+  return (
+    shouldRotateModel(error) ||
+    name === 'zoderror' ||
     msg.includes('format json') ||
     msg.includes('json') ||
     msg.includes('parse') ||
+    msg.includes('respons model kosong') ||
+    msg.includes('tidak valid') ||
+    msg.includes('wajib') ||
+    msg.includes('harus') ||
+    msg.includes('minimal') ||
     msg.includes('tingkat kesulitan') ||
     msg.includes('kriteria kualitas')
   );
@@ -68,10 +95,12 @@ function isTransientError(error: any): boolean {
 
 // Format pesan error menjadi bahasa Indonesia yang ramah & aman (tanpa membocorkan kunci/stack trace)
 export function formatFriendlyErrorMessage(error: any): string {
-  const msg = (error?.message || '').toLowerCase();
+  const rawMsg = typeof error?.message === 'string' ? error.message : '';
+  const msg = rawMsg.toLowerCase();
+  const name = (error?.name || '').toLowerCase();
 
   if (msg.includes('gemini_model belum dikonfigurasi')) {
-    return error.message;
+    return rawMsg;
   }
   if (msg.includes('tingkat kesulitan')) {
     return 'AI belum berhasil menyusun soal dengan tingkat kesulitan yang diminta. Silakan coba buat kuis kembali.';
@@ -79,14 +108,32 @@ export function formatFriendlyErrorMessage(error: any): string {
   if (msg.includes('429') || msg.includes('resource_exhausted') || msg.includes('quota')) {
     return 'Layanan Gemini sedang mengalami lonjakan beban atau batas pemakaian tercapai. Mohon tunggu beberapa detik dan coba kembali.';
   }
+  if (msg.includes('503') || msg.includes('high demand') || msg.includes('overloaded') || msg.includes('unavailable')) {
+    return 'Server model Gemini sedang mengalami lonjakan trafik sementara. Silakan coba lagi beberapa detik lagi.';
+  }
+  if (msg.includes('502') || msg.includes('504') || msg.includes('gateway')) {
+    return 'Gateway server AI sempat padat atau melewati batas waktu. Silakan coba lagi sesaat lagi.';
+  }
   if (msg.includes('safety') || msg.includes('blocked') || msg.includes('harm')) {
     return 'Permintaan tidak dapat diproses oleh AI karena terdeteksi melanggar filter keamanan konten.';
   }
   if (msg.includes('timeout') || msg.includes('aborted') || msg.includes('deadline')) {
     return 'Waktu proses pemanggilan AI melebihi batas waktu (timeout). Silakan coba dengan bab yang lebih pendek.';
   }
+  if (msg.includes('econnreset') || msg.includes('socket') || msg.includes('terminated') || msg.includes('fetch failed') || msg.includes('network')) {
+    return 'Koneksi jaringan ke server AI sempat terputus. Silakan coba kembali sesaat lagi.';
+  }
   if (msg.includes('api key') || msg.includes('unauthenticated')) {
     return 'Konfigurasi otentikasi AI server bermasalah. Harap periksa GEMINI_API_KEY.';
+  }
+  if (
+    name === 'zoderror' ||
+    msg.includes('format json') ||
+    msg.includes('respons model kosong') ||
+    msg.includes('kriteria kualitas') ||
+    msg.includes('tidak valid')
+  ) {
+    return 'Format jawaban AI belum lengkap atau belum sesuai struktur. Silakan coba buat ulang sekali lagi.';
   }
 
   return 'Terjadi kendala saat berkomunikasi dengan asisten AI. Silakan coba kembali sesaat lagi.';
@@ -94,7 +141,7 @@ export function formatFriendlyErrorMessage(error: any): string {
 
 /**
  * Panggilan Gemini untuk menghasilkan teks (Ringkasan, Mnemonic, QA)
- * dengan kontrol batas waktu total (deadline) dan timeout tiap percobaan yang efektif.
+ * dengan rotasi fallback model saat overload/503 dan batas waktu terkontrol.
  */
 export async function generateText(options: GenerationOptions): Promise<GenerationResult<string>> {
   const {
@@ -109,11 +156,12 @@ export async function generateText(options: GenerationOptions): Promise<Generati
   const systemInstruction = customSystemInstruction || rendered.systemInstruction;
 
   const ai = getGeminiClient();
-  const model = getModelName();
+  const candidates = getModelCandidates();
+  let modelIdx = 0;
 
   const startTime = Date.now();
   let lastError: any = null;
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = Math.max(3, candidates.length + 1);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const elapsed = Date.now() - startTime;
@@ -125,40 +173,64 @@ export async function generateText(options: GenerationOptions): Promise<Generati
       );
     }
 
-    const effectiveTimeout = calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
+    const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
+    const hasFallbackAhead = modelIdx + 1 < candidates.length;
+    const effectiveTimeout = hasFallbackAhead
+      ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 13000)
+      : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const callPromise = ai.models.generateContent({
-        model,
+        model: activeModel,
         contents: rendered.promptText,
         config: {
           systemInstruction,
           temperature: options.temperature ?? 0.2,
+          httpOptions: {
+            timeout: effectiveTimeout,
+          },
         },
       });
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), effectiveTimeout)
-      );
+      const timeoutPromise = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), effectiveTimeout);
+      });
 
       const response: any = await Promise.race([callPromise, timeoutPromise]);
 
-      const text = response.text || '';
+      const text = (response?.text || '').toString().trim();
+      if (!text) {
+        throw new Error('Respons model kosong atau bukan string.');
+      }
+
       const tokensIn = response.usageMetadata?.promptTokenCount || Math.ceil(rendered.promptText.length / 4);
       const tokensOut = response.usageMetadata?.candidatesTokenCount || Math.ceil(text.length / 4);
 
       return {
-        data: text.trim(),
+        data: text,
         tokensIn,
         tokensOut,
       };
     } catch (err: any) {
       lastError = err;
+      console.warn(
+        `[generateText] Percobaan ${attempt + 1} (${activeModel}) gagal:`,
+        err?.message || err
+      );
+
       if (attempt < MAX_RETRIES - 1 && isTransientError(err)) {
-        await waitWithJitter(attempt);
+        if (shouldRotateModel(err) && modelIdx + 1 < candidates.length) {
+          modelIdx++;
+          await waitWithJitter(0, 150);
+        } else {
+          await waitWithJitter(attempt, 600);
+        }
         continue;
       }
       break;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -185,19 +257,20 @@ export async function generateJson<T = any>(
   } = options;
 
   const ai = getGeminiClient();
-  const model = getModelName();
+  const candidates = getModelCandidates();
   const startTime = Date.now();
 
   let totalTokensIn = 0;
   let totalTokensOut = 0;
 
-  // Helper untuk 1 kali eksekusi generateContent JSON
+  // Helper untuk 1 kali eksekusi generateContent JSON dengan rotasi model cadangan bila overload
   async function callOnce(currentVars: Record<string, any>): Promise<any> {
     const rendered: RenderedPrompt = renderPrompt(promptName, currentVars);
     const systemInstruction = customSystemInstruction || rendered.systemInstruction;
 
     let lastError: any = null;
-    const MAX_RETRIES = 3;
+    let modelIdx = 0;
+    const MAX_RETRIES = Math.max(3, candidates.length + 1);
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const elapsed = Date.now() - startTime;
@@ -207,25 +280,33 @@ export async function generateJson<T = any>(
         throw new Error('Waktu proses melebihi batas aman yang diizinkan (timeout).');
       }
 
-      const effectiveTimeout = calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
+      const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
+      const hasFallbackAhead = modelIdx + 1 < candidates.length;
+      const effectiveTimeout = hasFallbackAhead
+        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 14000)
+        : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
 
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const callPromise = ai.models.generateContent({
-          model,
+          model: activeModel,
           contents: rendered.promptText,
           config: {
             systemInstruction,
             responseMimeType: 'application/json',
             temperature: options.temperature ?? 0.2,
+            httpOptions: {
+              timeout: effectiveTimeout,
+            },
           },
         });
 
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), effectiveTimeout)
-        );
+        const timeoutPromise = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('timeout')), effectiveTimeout);
+        });
 
         const response: any = await Promise.race([callPromise, timeoutPromise]);
-        const rawText = response.text || '';
+        const rawText = (response?.text || '').toString();
 
         const tIn = response.usageMetadata?.promptTokenCount || Math.ceil(rendered.promptText.length / 4);
         const tOut = response.usageMetadata?.candidatesTokenCount || Math.ceil(rawText.length / 4);
@@ -236,11 +317,23 @@ export async function generateJson<T = any>(
         return validatorFn ? validatorFn(parsedJson) : parsedJson;
       } catch (err: any) {
         lastError = err;
+        console.warn(
+          `[generateJson] Percobaan ${attempt + 1} (${activeModel}) gagal:`,
+          err?.message || err
+        );
+
         if (attempt < MAX_RETRIES - 1 && isTransientError(err)) {
-          await waitWithJitter(attempt);
+          if (shouldRotateModel(err) && modelIdx + 1 < candidates.length) {
+            modelIdx++;
+            await waitWithJitter(0, 150);
+          } else {
+            await waitWithJitter(attempt, 600);
+          }
           continue;
         }
         break;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
 
@@ -296,7 +389,7 @@ export async function generateJson<T = any>(
 }
 
 async function recoverInterruptedStream(params: {
-  model: string;
+  models: string[];
   systemInstruction: string;
   renderedPromptText: string;
   temperature: number;
@@ -306,7 +399,7 @@ async function recoverInterruptedStream(params: {
   abortPromise: Promise<never>;
 }): Promise<{ appendText: string; tokensIn: number; tokensOut: number } | null> {
   const {
-    model,
+    models,
     systemInstruction,
     renderedPromptText,
     temperature,
@@ -323,14 +416,15 @@ async function recoverInterruptedStream(params: {
 
   const ai = getGeminiClient();
   const recoveryDeadline = Date.now() + remainingTimeMs;
-  const MAX_RECOVERY_ATTEMPTS = 2;
+  const MAX_RECOVERY_ATTEMPTS = Math.max(2, models.length);
 
   for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt++) {
     if (abortSignal.aborted) return null;
     const timeLeft = recoveryDeadline - Date.now();
     if (timeLeft < 3000) return null;
 
-    const effectiveTimeout = calculateEffectiveTimeout(18000, timeLeft);
+    const activeModel = models[Math.min(attempt, models.length - 1)];
+    const effectiveTimeout = calculateEffectiveTimeout(15000, timeLeft);
     let recTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
@@ -340,11 +434,14 @@ async function recoverInterruptedStream(params: {
 
       const response: any = await Promise.race([
         ai.models.generateContent({
-          model,
+          model: activeModel,
           contents: recoveryPrompt,
           config: {
             systemInstruction,
             temperature,
+            httpOptions: {
+              timeout: effectiveTimeout,
+            },
           },
         }),
         timeoutPromise,
@@ -357,7 +454,7 @@ async function recoverInterruptedStream(params: {
         : rawText.trim();
 
       if (!appendText || appendText.trim().length === 0) {
-        return null;
+        continue;
       }
 
       return {
@@ -370,11 +467,11 @@ async function recoverInterruptedStream(params: {
     } catch (recErr: any) {
       if (abortSignal.aborted) return null;
       console.warn(
-        `[generateStream recovery attempt ${attempt + 1}] Gagal memulihkan stream:`,
+        `[generateStream recovery attempt ${attempt + 1}] (${activeModel}) Gagal memulihkan stream:`,
         recErr?.message || recErr
       );
       if (attempt < MAX_RECOVERY_ATTEMPTS - 1 && isTransientError(recErr)) {
-        await waitWithJitter(attempt, 500);
+        await waitWithJitter(0, 200);
         continue;
       }
       return null;
@@ -387,9 +484,9 @@ async function recoverInterruptedStream(params: {
 }
 
 /**
- * Panggilan streaming untuk Tanya Jawab (QA), Ringkasan, dan Penjelasan Kuis.
- * Menggunakan parser SSE UTF-8 streaming yang tahan pemotongan chunk, retry pembukaan stream,
- * dan pemulihan otomatis (kelanjutan non-stream) apabila koneksi SSE terputus di tengah jalan.
+ * Panggilan streaming untuk Tanya Jawab (QA), Ringkasan, Mnemonic, dan Penjelasan Kuis.
+ * Menggunakan parser SSE UTF-8 streaming yang tahan pemotongan chunk, rotasi fallback model,
+ * retry pembukaan stream, serta pemulihan otomatis apabila koneksi SSE terputus di tengah jalan.
  */
 export async function generateStream(
   options: GenerationOptions,
@@ -401,7 +498,9 @@ export async function generateStream(
   const systemInstruction = customSystemInstruction || rendered.systemInstruction;
   const temperature = options.temperature ?? 0.2;
 
-  const model = getModelName();
+  const candidates = getModelCandidates();
+  let modelIdx = 0;
+  let activeStreamModel = candidates[0];
   const startTime = Date.now();
 
   const abortController = new AbortController();
@@ -411,7 +510,7 @@ export async function generateStream(
   }, totalDeadlineMs);
 
   let responseStream: AsyncGenerator<{ text: string; usageMetadata?: any; finishReason?: string }>;
-  const MAX_OPEN_RETRIES = 3;
+  const MAX_OPEN_RETRIES = Math.max(3, candidates.length + 1);
   let openError: any = null;
 
   for (let attempt = 0; attempt < MAX_OPEN_RETRIES; attempt++) {
@@ -421,24 +520,37 @@ export async function generateStream(
       break;
     }
 
+    activeStreamModel = candidates[Math.min(modelIdx, candidates.length - 1)];
+    const hasFallbackAhead = modelIdx + 1 < candidates.length;
+    const connectSignal = hasFallbackAhead
+      ? AbortSignal.any([abortController.signal, AbortSignal.timeout(Math.min(10000, remaining - 2000))])
+      : abortController.signal;
+
     try {
       responseStream = await openGeminiSseStream({
-        model,
+        model: activeStreamModel,
         promptText: rendered.promptText,
         systemInstruction,
         temperature,
-        signal: abortController.signal,
+        signal: connectSignal,
       });
       openError = null;
       break;
     } catch (err: any) {
       openError = err;
+      if (abortController.signal.aborted) break;
+
       if (attempt < MAX_OPEN_RETRIES - 1 && isTransientError(err)) {
         console.warn(
-          `[generateStream open attempt ${attempt + 1}] Gagal membuka stream, retry:`,
+          `[generateStream open attempt ${attempt + 1}] (${activeStreamModel}) Gagal membuka stream:`,
           err?.message || err
         );
-        await waitWithJitter(attempt, 700);
+        if (shouldRotateModel(err) && modelIdx + 1 < candidates.length) {
+          modelIdx++;
+          await waitWithJitter(0, 150);
+        } else {
+          await waitWithJitter(attempt, 600);
+        }
         continue;
       }
       break;
@@ -557,8 +669,12 @@ export async function generateStream(
       ) {
         const remainingForRecovery = totalDeadlineMs - (Date.now() - startTime);
         if (remainingForRecovery > 5000) {
+          const orderedRecoveryModels = [
+            ...candidates.filter((m) => m !== activeStreamModel),
+            activeStreamModel,
+          ];
           const recovered = await recoverInterruptedStream({
-            model,
+            models: orderedRecoveryModels,
             systemInstruction,
             renderedPromptText: rendered.promptText,
             temperature,

@@ -109,3 +109,35 @@ export function getModelName(): string {
   }
   return model.trim();
 }
+
+const DEFAULT_FLASH_FALLBACK_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash'];
+
+/**
+ * Menghasilkan daftar kandidat model terurut: model utama dari GEMINI_MODEL diikuti
+ * GEMINI_FALLBACK_MODELS (opsional) dan model Flash alternatif yang sehat agar tetap
+ * tersedia saat model utama mengalami lonjakan beban 503 atau lambat sementara.
+ */
+export function getModelCandidates(primaryModel?: string): string[] {
+  const primary = (primaryModel || getModelName()).trim();
+  const candidates: string[] = [primary];
+
+  const envFallbacks = (process.env.GEMINI_FALLBACK_MODELS || '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+
+  for (const m of envFallbacks) {
+    if (!candidates.includes(m)) candidates.push(m);
+  }
+
+  if (
+    process.env.GEMINI_DISABLE_MODEL_FALLBACK !== 'true' &&
+    primary.toLowerCase().includes('flash')
+  ) {
+    for (const fallback of DEFAULT_FLASH_FALLBACK_MODELS) {
+      if (!candidates.includes(fallback)) candidates.push(fallback);
+    }
+  }
+
+  return candidates;
+}

@@ -3,7 +3,11 @@
 import { useState } from 'react';
 import { Brain, Loader2, Copy, Check } from 'lucide-react';
 import FormattedContent from '@/components/FormattedContent';
-import { formatFriendlyErrorMessage } from '@/lib/learning/api-stream-reader';
+import {
+  readApiResponse,
+  formatFriendlyErrorMessage,
+  cleanDisplayText,
+} from '@/lib/learning/api-stream-reader';
 
 interface Chunk {
   id: string;
@@ -14,7 +18,7 @@ interface Chunk {
 interface MnemonicTabProps {
   moduleId: string;
   chunks: Chunk[];
-  onError: (msg: string) => void;
+  onError: (msg: string, retry?: () => void) => void;
 }
 
 export default function MnemonicTab({ moduleId, chunks, onError }: MnemonicTabProps) {
@@ -41,23 +45,23 @@ export default function MnemonicTab({ moduleId, chunks, onError }: MnemonicTabPr
         body: JSON.stringify({
           moduleId,
           feature: 'mnemonic',
+          stream: true,
           params: {
             topic,
           },
         }),
       });
 
-      if (!response.ok) {
-        const errJson = await response.json();
-        throw new Error(errJson.error || 'Gagal menghasilkan bantuan hafalan.');
-      }
+      const result = await readApiResponse({
+        response,
+        onChunk: (accumulated) => setMnemonicResult(accumulated),
+      });
 
-      const json = await response.json();
-      setMnemonicResult(json.result?.markdown || '');
+      setMnemonicResult(result.text);
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
-        onError(friendly.message);
+        onError(friendly.message, () => handleGenerateMnemonic(topic));
       }
     } finally {
       setIsGeneratingMnemonic(false);
@@ -143,9 +147,15 @@ export default function MnemonicTab({ moduleId, chunks, onError }: MnemonicTabPr
             {mnemonicResult && (
               <button
                 onClick={async () => {
-                  await navigator.clipboard.writeText(mnemonicResult);
-                  setMnemonicCopied(true);
-                  setTimeout(() => setMnemonicCopied(false), 2000);
+                  const clean = cleanDisplayText(mnemonicResult);
+                  if (!clean) return;
+                  try {
+                    await navigator.clipboard.writeText(clean);
+                    setMnemonicCopied(true);
+                    setTimeout(() => setMnemonicCopied(false), 2000);
+                  } catch {
+                    // Abaikan bila clipboard diblokir browser
+                  }
                 }}
                 className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 transition"
               >
@@ -165,7 +175,7 @@ export default function MnemonicTab({ moduleId, chunks, onError }: MnemonicTabPr
           </div>
 
           <div className="text-slate-800 dark:text-slate-200 text-sm leading-relaxed space-y-3">
-            {isGeneratingMnemonic && (
+            {isGeneratingMnemonic && !mnemonicResult && (
               <div className="flex items-center gap-3 py-6 text-slate-500 dark:text-slate-400 text-sm animate-pulse">
                 <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
                 <span>Gemini AI sedang menyusun akronim dan analogi kreatif...</span>
