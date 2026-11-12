@@ -1,4 +1,4 @@
-TUGAS: Buat {{jumlah}} soal pilihan ganda dari modul sesuai tingkat kesulitan yang diminta.
+TUGAS: Buat TEPAT {{jumlah}} soal pilihan ganda unik dari modul sesuai tingkat kesulitan yang diminta (array "soal" WAJIB berisi tepat {{jumlah}} butir, jangan kurang).
 
 PARAMETER
 - Tingkat kesulitan: {{tingkat}}       (mudah | sedang | sulit | campuran)

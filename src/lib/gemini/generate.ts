@@ -8,6 +8,7 @@ export interface GenerationOptions {
   promptName: string;
   variables: Record<string, any>;
   customSystemInstruction?: string;
+  extraSystemInstruction?: string;
   temperature?: number;
   attemptTimeoutMs?: number; // Batas durasi per percobaan individual (default 20 detik)
   totalDeadlineMs?: number;  // Batas total durasi (deadline) seluruh percobaan (default 48 detik)
@@ -264,9 +265,15 @@ export async function generateJson<T = any>(
   let totalTokensOut = 0;
 
   // Helper untuk 1 kali eksekusi generateContent JSON dengan rotasi model cadangan bila overload
-  async function callOnce(currentVars: Record<string, any>): Promise<any> {
+  async function callOnce(
+    currentVars: Record<string, any>,
+    instructionSuffix?: string
+  ): Promise<any> {
     const rendered: RenderedPrompt = renderPrompt(promptName, currentVars);
-    const systemInstruction = customSystemInstruction || rendered.systemInstruction;
+    const baseInstruction = customSystemInstruction || rendered.systemInstruction;
+    const systemInstruction = [baseInstruction, options.extraSystemInstruction, instructionSuffix]
+      .filter(Boolean)
+      .join('\n\n');
 
     let lastError: any = null;
     let modelIdx = 0;
@@ -283,7 +290,7 @@ export async function generateJson<T = any>(
       const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
       const hasFallbackAhead = modelIdx + 1 < candidates.length;
       const effectiveTimeout = hasFallbackAhead
-        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 14000)
+        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 18000)
         : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
 
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -352,7 +359,7 @@ export async function generateJson<T = any>(
       currentCount = (currentResult as any).kartu.length;
     }
 
-    const MAX_GAP_ROUNDS = 2;
+    const MAX_GAP_ROUNDS = 3;
     let round = 0;
 
     while (currentCount < targetCount && round < MAX_GAP_ROUNDS) {
@@ -362,10 +369,28 @@ export async function generateJson<T = any>(
       }
 
       const diff = targetCount - currentCount;
-      const gapVars = { ...variables, jumlah: diff };
+      const bufferedDiff = diff >= 2 && diff <= 8 ? diff + 1 : diff;
+      const gapVars = { ...variables, jumlah: bufferedDiff };
+
+      const existingStems = Array.isArray((currentResult as any)?.soal)
+        ? (currentResult as any).soal
+            .slice(-20)
+            .map((s: any) => String(s?.pertanyaan || '').trim().slice(0, 90))
+            .filter(Boolean)
+        : Array.isArray((currentResult as any)?.kartu)
+        ? (currentResult as any).kartu
+            .slice(-20)
+            .map((c: any) => String(c?.depan || '').trim().slice(0, 90))
+            .filter(Boolean)
+        : [];
+
+      const avoidHint =
+        existingStems.length > 0
+          ? `ATURAN TAMBAHAN KEKURANGAN BUTIR: Anda wajib menghasilkan ${bufferedDiff} butir BARU yang tidak mengulang daftar berikut:\n- ${existingStems.join('\n- ')}`
+          : undefined;
 
       try {
-        const additionalResult = await callOnce(gapVars);
+        const additionalResult = await callOnce(gapVars, avoidHint);
         currentResult = gapFillerFn(currentResult, additionalResult);
 
         if ((currentResult as any)?.soal) {

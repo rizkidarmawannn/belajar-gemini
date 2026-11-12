@@ -511,11 +511,11 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       </div>
 
       {/* Status Saat Menyusun Soal Banyak */}
-      {isGeneratingQuiz && quizCount >= 20 && (
+      {isGeneratingQuiz && quizCount >= 10 && (
         <div className="p-4 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200 text-xs flex items-center gap-3 animate-pulse">
           <Loader2 className="w-4 h-4 animate-spin text-indigo-600 flex-shrink-0" />
           <span>
-            AI sedang menyusun <strong>{quizCount} butir soal</strong> latihan secara mendalam beserta opsi dan pembahasannya. Mohon tunggu sekitar 15–30 detik...
+            AI sedang menyusun <strong>{quizCount} butir soal</strong> secara paralel per batch agar lengkap dan akurat. Mohon tunggu sebentar...
           </span>
         </div>
       )}

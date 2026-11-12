@@ -20,6 +20,87 @@ export const QA_FULL_MODULE_CHAR_LIMIT = 60000;
 // Fitur yang mendukung streaming respons teks/markdown langsung ke klien
 const STREAMABLE_FEATURES = new Set(['qa', 'summary', 'summary_short', 'quiz_explain', 'mnemonic']);
 
+/**
+ * Membagi jumlah item target menjadi sub-batch seimbang agar ukuran per panggilan
+ * kecil, cepat, dan bebas timeout (mis. 25 soal / max 5 => [5, 5, 5, 5, 5]).
+ */
+export function splitIntoBalancedBatchCounts(total: number, maxPerBatch: number): number[] {
+  if (total <= 0) return [];
+  const safeMax = Math.max(1, maxPerBatch);
+  const numBatches = Math.ceil(total / safeMax);
+  const base = Math.floor(total / numBatches);
+  const remainder = total % numBatches;
+  return Array.from({ length: numBatches }, (_, idx) => base + (idx < remainder ? 1 : 0));
+}
+
+/**
+ * Mengeksekusi daftar task async dengan batas konkurensi agar tidak memicu burst rate-limit.
+ */
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number
+): Promise<PromiseSettledResult<T>[]> {
+  if (tasks.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, tasks.length));
+  const results = new Array<PromiseSettledResult<T>>(tasks.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const idx = nextIndex++;
+      try {
+        const value = await tasks[idx]();
+        results[idx] = { status: 'fulfilled', value };
+      } catch (reason) {
+        results[idx] = { status: 'rejected', reason };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: limit }, () => worker()));
+  return results;
+}
+
+/**
+ * Memastikan hasil cache kuis/flashcard benar-benar lengkap sesuai jumlah yang diminta,
+ * sehingga hasil parsial lama (mis. 5 soal pada permintaan 25 soal) otomatis dilewati & diperbarui.
+ */
+export function isCacheCompleteForRequest(
+  feature: string,
+  result: any,
+  requestedCount: number
+): boolean {
+  if (feature === 'quiz') {
+    const len = Array.isArray(result?.soal) ? result.soal.length : 0;
+    return len >= requestedCount;
+  }
+  if (feature === 'flashcards') {
+    const len = Array.isArray(result?.kartu) ? result.kartu.length : 0;
+    return len >= requestedCount;
+  }
+  return Boolean(result);
+}
+
+function buildQuizAvoidDuplicatesInstruction(
+  existingQuestions: string[],
+  batchNote?: string
+): string | undefined {
+  const parts: string[] = [];
+  if (batchNote) {
+    parts.push(batchNote);
+  }
+  if (existingQuestions.length > 0) {
+    const sample = existingQuestions
+      .slice(-25)
+      .map((q) => `- ${q.trim().slice(0, 90)}`)
+      .join('\n');
+    parts.push(
+      `HINDARI DUPLIKASI: Pertanyaan berikut SUDAH dibuat pada batch sebelumnya. Buat soal dengan topik, skenario, dan rumusan yang BERBEDA:\n${sample}`
+    );
+  }
+  return parts.length > 0 ? parts.join('\n\n') : undefined;
+}
+
 // Helper merangkai jendela cuplikan modul terfokus agar pendalaman 1 soal tetap cepat (< 8.000 karakter)
 function extractFocusedExcerpt(text: string, query: string, maxChars: number): string {
   if (!text || text.length <= maxChars) return text || '';
@@ -241,7 +322,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       deps.promptVersion
     );
 
-    if (cachedGen) {
+    const requestedItemCount = body.params.count || 5;
+    if (cachedGen && isCacheCompleteForRequest(body.feature, cachedGen.result, requestedItemCount)) {
       const cachedUsedChapters = (cachedGen.result as any)?.usedChapters;
 
       // Jika mode stream diminta dan cache hit, kembalikan juga sebagai stream teks dengan header X-Cache: HIT
@@ -611,9 +693,28 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       case 'quiz': {
         const reqCount = body.params.count || 5;
         const expMode = body.params.explanationMode || 'modul';
+        const quizStartTime = Date.now();
+        const TOTAL_QUIZ_DEADLINE_MS = 46000;
 
-        if (reqCount <= 15) {
-          // Permintaan kuis skala kecil (5-15 butir): 1 panggilan cepat
+        const dedupeSoal = (list: any[]): any[] => {
+          const seenQ = new Set<string>();
+          const unique: any[] = [];
+          for (const s of list) {
+            const qKey = String(s?.pertanyaan || '').trim().toLowerCase();
+            if (qKey && !seenQ.has(qKey)) {
+              seenQ.add(qKey);
+              unique.push(s);
+            }
+          }
+          return unique;
+        };
+
+        let uniqueSoal: any[] = [];
+        tokensIn = 0;
+        tokensOut = 0;
+
+        if (reqCount <= 8) {
+          // Permintaan kuis ringan (5-8 butir): 1 panggilan cepat + gap filling otomatis
           const gen = await deps.callGeminiJson(
             {
               promptName: 'quiz',
@@ -625,59 +726,49 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                 modul: moduleContent,
               },
               attemptTimeoutMs: 20000,
-              totalDeadlineMs: 40000,
+              totalDeadlineMs: 42000,
             },
             (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty),
             reqCount,
             mergeQuizResults
           );
-          resultData = {
-            ...gen.data,
-            soal: (gen.data?.soal || []).map((s: any) => ({
-              ...s,
-              sumber_penjelasan: s.sumber_penjelasan || expMode,
-            })),
-          };
-          tokensIn = gen.tokensIn;
-          tokensOut = gen.tokensOut;
+          uniqueSoal = dedupeSoal(gen.data?.soal || []);
+          tokensIn = gen.tokensIn || 0;
+          tokensOut = gen.tokensOut || 0;
         } else {
-          // Permintaan kuis skala besar (20, 25, 50, 100 butir):
-          // Eksekusi sub-batch paralel menggunakan Promise.all agar waktu proses total tetap singkat
-          // dan bebas dari risiko timeout serverless Netlify/Vercel (504 Gateway Timeout).
-          const BATCH_SIZE =
-            expMode === 'keduanya'
-              ? reqCount >= 30
-                ? 15
-                : 10
-              : reqCount >= 60
-              ? 20
-              : reqCount >= 30
-              ? 15
-              : 10;
-          const numBatches = Math.ceil(reqCount / BATCH_SIZE);
+          // Permintaan kuis skala menengah & besar (10, 15, 20, 25, 30, 50, 100 butir):
+          // Bagi menjadi batch kecil seimbang (5 untuk mode 'keduanya', 7 untuk lainnya)
+          // agar tiap panggilan cepat selesai, lalu top-up kekurangan jika ada batch gagal/duplikat.
+          const maxPerBatch = expMode === 'keduanya' ? 5 : 7;
+          const batchCounts = splitIntoBalancedBatchCounts(reqCount, maxPerBatch);
+          const numBatches = batchCounts.length;
 
           const chunksList = Array.isArray(chunksData) ? chunksData : [];
           const canPartitionChunks = chunksList.length >= numBatches && !body.chapterPosition;
 
-          const batchPromises = Array.from({ length: numBatches }, async (_, idx) => {
-            const isLast = idx === numBatches - 1;
-            const subCount = isLast ? reqCount - idx * BATCH_SIZE : BATCH_SIZE;
-
+          const batchTasks = batchCounts.map((subCount, idx) => async () => {
             let subModuleContent = moduleContent;
             let subBabName = body.params.chapterName || 'semua';
+            let batchNote: string | undefined = `Fokus paket ${idx + 1} dari ${numBatches}: buat tepat ${subCount} soal unik yang menyebar ke aspek materi berbeda agar tidak tumpang tindih dengan paket lain.`;
 
             if (canPartitionChunks) {
               const startIdx = Math.floor((idx * chunksList.length) / numBatches);
               const endIdx = Math.floor(((idx + 1) * chunksList.length) / numBatches);
               const slice = chunksList.slice(startIdx, endIdx);
-              if (slice.length > 0) {
-                subModuleContent = slice
-                  .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
-                  .join('\n\n---\n\n');
+              const candidateText = slice
+                .map((c: any) => `### ${c.chapter_title}\n\n${c.content}`)
+                .join('\n\n---\n\n');
+              // Pastikan slice cukup substantif (>= 800 karakter); jika terlalu pendek (mis. Cover/Daftar Pustaka),
+              // pakai moduleContent penuh agar AI tetap mampu menyusun soal sebanyak subCount.
+              if (candidateText.trim().length >= 800) {
+                subModuleContent = candidateText;
                 subBabName = slice.map((c: any) => c.chapter_title).join(', ');
+                batchNote = undefined;
+              } else {
+                subBabName = `${body.params.chapterName || 'Umum'} (Paket ${idx + 1})`;
               }
             } else {
-              subBabName = `${body.params.chapterName || 'Umum'} (Paket Bagian ${idx + 1})`;
+              subBabName = `${body.params.chapterName || 'Umum'} (Paket ${idx + 1})`;
             }
 
             return await deps.callGeminiJson(
@@ -690,8 +781,9 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                   mode_penjelasan: expMode,
                   modul: subModuleContent,
                 },
-                attemptTimeoutMs: 25000,
-                totalDeadlineMs: 45000,
+                extraSystemInstruction: buildQuizAvoidDuplicatesInstruction([], batchNote),
+                attemptTimeoutMs: 22000,
+                totalDeadlineMs: 40000,
               },
               (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty),
               subCount,
@@ -699,11 +791,8 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             );
           });
 
-          const batchResults = await Promise.allSettled(batchPromises);
-
+          const batchResults = await runWithConcurrency(batchTasks, 5);
           let combinedSoal: any[] = [];
-          tokensIn = 0;
-          tokensOut = 0;
 
           for (const res of batchResults) {
             if (res.status === 'fulfilled') {
@@ -716,30 +805,90 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
             }
           }
 
-          if (combinedSoal.length === 0) {
-            throw new Error('AI tidak berhasil menyusun soal kuis yang valid. Silakan coba kembali sesaat lagi.');
-          }
+          uniqueSoal = dedupeSoal(combinedSoal);
 
-          // Deduplikasi berdasarkan teks pertanyaan
-          const seenQ = new Set<string>();
-          const uniqueSoal: any[] = [];
-          for (const s of combinedSoal) {
-            const qKey = (s.pertanyaan || '').trim().toLowerCase();
-            if (!seenQ.has(qKey)) {
-              seenQ.add(qKey);
-              uniqueSoal.push(s);
+          // Putaran top-up otomatis bila total soal masih kurang dari reqCount
+          const MAX_TOPUP_ROUNDS = 2;
+          let topUpRound = 0;
+
+          while (uniqueSoal.length < reqCount && topUpRound < MAX_TOPUP_ROUNDS) {
+            const elapsedMs = Date.now() - quizStartTime;
+            const remainingMs = TOTAL_QUIZ_DEADLINE_MS - elapsedMs;
+            if (remainingMs < 6000) {
+              break;
             }
+
+            const missing = reqCount - uniqueSoal.length;
+            const targetWithBuffer = missing + Math.min(2, Math.max(1, Math.ceil(missing * 0.2)));
+            const topUpBatchCounts = splitIntoBalancedBatchCounts(
+              Math.min(targetWithBuffer, reqCount),
+              maxPerBatch
+            );
+            const existingStems = uniqueSoal.map((s) => String(s.pertanyaan || ''));
+
+            const topUpTasks = topUpBatchCounts.map((subCount, idx) => async () =>
+              deps.callGeminiJson(
+                {
+                  promptName: 'quiz',
+                  variables: {
+                    jumlah: subCount,
+                    tingkat: body.params.difficulty,
+                    bab: `${body.params.chapterName || 'semua'} (Tambahan ${topUpRound + 1}.${idx + 1})`,
+                    mode_penjelasan: expMode,
+                    modul: moduleContent,
+                  },
+                  extraSystemInstruction: buildQuizAvoidDuplicatesInstruction(
+                    existingStems,
+                    `Buat tepat ${subCount} soal BARU untuk melengkapi kekurangan kuis (${uniqueSoal.length}/${reqCount} terkumpul).`
+                  ),
+                  attemptTimeoutMs: Math.min(20000, remainingMs - 2000),
+                  totalDeadlineMs: Math.max(6000, remainingMs - 1000),
+                },
+                (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty)
+              )
+            );
+
+            const topUpResults = await runWithConcurrency(topUpTasks, 5);
+            let addedInRound = false;
+            for (const res of topUpResults) {
+              if (res.status === 'fulfilled') {
+                tokensIn += res.value.tokensIn || 0;
+                tokensOut += res.value.tokensOut || 0;
+                const extraArr = res.value.data?.soal || [];
+                if (extraArr.length > 0) {
+                  combinedSoal = [...combinedSoal, ...extraArr];
+                  addedInRound = true;
+                }
+              }
+            }
+
+            uniqueSoal = dedupeSoal(combinedSoal);
+            topUpRound++;
+            if (!addedInRound) break;
           }
 
-          // Nomor ulang terurut 1..N dan pastikan label sumber terisi
-          const renumbered = uniqueSoal.slice(0, reqCount).map((s, i) => ({
-            ...s,
-            sumber_penjelasan: s.sumber_penjelasan || expMode,
-            nomor: i + 1,
-          }));
-
-          resultData = { soal: renumbered };
+          // Untuk kuis multi-batch (>= 10 soal), tolak hasil parsial parah (mis. hanya 5 dari 25 soal)
+          // alih-alih mengembalikan kuis terpotong diam-diam
+          const minAcceptable = reqCount <= 10 ? reqCount : Math.ceil(reqCount * 0.85);
+          if (uniqueSoal.length > 0 && uniqueSoal.length < minAcceptable) {
+            throw new Error(
+              `AI baru berhasil menyusun ${uniqueSoal.length} dari ${reqCount} soal yang diminta karena kepadatan model sementara. Silakan klik "Coba Lagi".`
+            );
+          }
         }
+
+        if (uniqueSoal.length === 0) {
+          throw new Error('AI tidak berhasil menyusun soal kuis yang valid. Silakan coba kembali sesaat lagi.');
+        }
+
+        // Nomor ulang terurut 1..N dan pastikan label sumber terisi
+        const renumbered = uniqueSoal.slice(0, reqCount).map((s, i) => ({
+          ...s,
+          sumber_penjelasan: s.sumber_penjelasan || expMode,
+          nomor: i + 1,
+        }));
+
+        resultData = { soal: renumbered };
         break;
       }
 
@@ -858,19 +1007,21 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     console.error('[Generate Route] Gagal update usage_log:', logErr?.message || logErr);
   }
 
-  try {
-    await deps.saveGeneration({
-      user_id: user.id,
-      module_id: body.moduleId,
-      feature: body.feature,
-      params_hash: paramsHash,
-      prompt_version: deps.promptVersion,
-      result: resultData,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-    });
-  } catch (genErr: any) {
-    console.error('[Generate Route] Gagal menyimpan data ke generations cache:', genErr?.message || genErr);
+  if (isCacheCompleteForRequest(body.feature, resultData, body.params.count || 5)) {
+    try {
+      await deps.saveGeneration({
+        user_id: user.id,
+        module_id: body.moduleId,
+        feature: body.feature,
+        params_hash: paramsHash,
+        prompt_version: deps.promptVersion,
+        result: resultData,
+        tokens_in: tokensIn,
+        tokens_out: tokensOut,
+      });
+    } catch (genErr: any) {
+      console.error('[Generate Route] Gagal menyimpan data ke generations cache:', genErr?.message || genErr);
+    }
   }
 
   return Response.json({

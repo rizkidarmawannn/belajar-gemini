@@ -15,7 +15,11 @@ import {
   mergeQuizResults,
   mergeFlashcardResults,
 } from '../src/lib/validators/index.ts';
-import { handleGenerate } from '../src/lib/gemini/handler.ts';
+import {
+  handleGenerate,
+  splitIntoBalancedBatchCounts,
+  isCacheCompleteForRequest,
+} from '../src/lib/gemini/handler.ts';
 
 // ==================== 1. TEST MODEL NAME & CONFIG ====================
 
@@ -1005,4 +1009,165 @@ test('Route Handler ASLI: mnemonic mendukung mode streaming MISS dan HIT cache t
   assert.equal(resHit.status, 200);
   assert.equal(resHit.headers.get('X-Cache'), 'HIT');
   assert.equal(await resHit.text(), '### Jembatan Keledai\n**K3** = Keselamatan, Kesehatan, Kerja.');
+});
+
+// ==================== 13. TEST KONSISTENSI JUMLAH SOAL KUIS (25 SOAL, TOP-UP & CACHE GUARD) ====================
+
+test('splitIntoBalancedBatchCounts & isCacheCompleteForRequest mencegah batch timpang dan cache parsial', () => {
+  assert.deepEqual(splitIntoBalancedBatchCounts(25, 5), [5, 5, 5, 5, 5]);
+  assert.deepEqual(splitIntoBalancedBatchCounts(25, 7), [7, 6, 6, 6]);
+  assert.deepEqual(splitIntoBalancedBatchCounts(15, 5), [5, 5, 5]);
+
+  assert.equal(isCacheCompleteForRequest('quiz', { soal: new Array(5).fill({}) }, 25), false);
+  assert.equal(isCacheCompleteForRequest('quiz', { soal: new Array(25).fill({}) }, 25), true);
+  assert.equal(isCacheCompleteForRequest('flashcards', { kartu: new Array(3).fill({}) }, 10), false);
+});
+
+test('Route Handler ASLI: kuis 25 soal memulihkan batch gagal lewat top-up dan menolak/tidak menyimpan bila tetap hanya 5 soal', async () => {
+  // Kasus A: 2 batch awal gagal sementara, putaran top-up menutup kekurangan hingga tepat 25 soal
+  let callCounter = 0;
+  const depsTopUp = createMockDeps({
+    async callGeminiJson(opts) {
+      callCounter++;
+      const batchIdx = callCounter;
+      if (batchIdx <= 2) {
+        throw new Error('Simulasi timeout sementara pada batch awal');
+      }
+      const n = Number(opts.variables.jumlah) || 5;
+      return {
+        data: {
+          soal: Array.from({ length: n }, (_, i) => ({
+            nomor: i + 1,
+            pertanyaan: `Pertanyaan unik batch ${batchIdx}-${i + 1} tentang struktur sel`,
+            opsi: { A: 'Inti sel', B: 'Mitokondria', C: 'Ribosom', D: 'Lisosom' },
+            kunci: 'A',
+            penjelasan: 'Penjelasan ringkas.',
+            penjelasan_modul: 'Dari modul.',
+            penjelasan_luar: 'Dari luar.',
+            sumber_penjelasan: 'keduanya',
+            bab: 'Bab 1',
+            tingkat: 'sedang',
+          })),
+        },
+        tokensIn: 50,
+        tokensOut: 40,
+      };
+    },
+  });
+
+  const resFull = await handleGenerate(depsTopUp, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: { count: 25, difficulty: 'sedang', explanationMode: 'keduanya' },
+  });
+  assert.equal(resFull.status, 200);
+  const jsonFull = await resFull.json();
+  assert.equal(jsonFull.result.soal.length, 25);
+  assert.equal(jsonFull.result.soal[24].nomor, 25);
+  assert.equal(depsTopUp._getCacheMap().size, 1, 'Hasil 25 soal penuh harus disimpan ke cache');
+
+  // Kasus B: hanya 5 soal terkumpul dari permintaan 25 soal -> harus gagal (refund kuota) dan TIDAK meracuni cache
+  let onlyFirst = true;
+  const depsPartialFail = createMockDeps({
+    async callGeminiJson(opts) {
+      if (onlyFirst) {
+        onlyFirst = false;
+        const n = Number(opts.variables.jumlah) || 5;
+        return {
+          data: {
+            soal: Array.from({ length: n }, (_, i) => ({
+              nomor: i + 1,
+              pertanyaan: `Soal tunggal ${i + 1}`,
+              opsi: { A: 'Opsi A', B: 'Opsi B', C: 'Opsi C', D: 'Opsi D' },
+              kunci: 'B',
+              penjelasan: 'Penjelasan.',
+              bab: 'Bab 1',
+              tingkat: 'sedang',
+            })),
+          },
+          tokensIn: 40,
+          tokensOut: 30,
+        };
+      }
+      throw new Error('503 Service Unavailable');
+    },
+  });
+
+  const resPartial = await handleGenerate(depsPartialFail, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: { count: 25, difficulty: 'sedang', explanationMode: 'keduanya' },
+  });
+  assert.equal(resPartial.status, 500);
+  const jsonPartial = await resPartial.json();
+  assert.match(jsonPartial.error, /5 dari 25 soal/);
+  assert.equal(depsPartialFail._getUsageDeletions().length, 1, 'Kuota harus di-refund');
+  assert.equal(depsPartialFail._getCacheMap().size, 0, 'Hasil 5 soal tidak boleh masuk cache count=25');
+});
+
+test('Route Handler ASLI: cache lama yang terlanjur berisi 5 soal untuk permintaan 25 soal dilewati & diperbarui otomatis', async () => {
+  let seq = 0;
+  const deps = createMockDeps({
+    async callGeminiJson(opts) {
+      seq++;
+      const n = Number(opts.variables.jumlah) || 5;
+      return {
+        data: {
+          soal: Array.from({ length: n }, (_, i) => ({
+            nomor: i + 1,
+            pertanyaan: `Soal lengkap pembaruan ${seq}-${i + 1}`,
+            opsi: { A: 'A1', B: 'B1', C: 'C1', D: 'D1' },
+            kunci: 'C',
+            penjelasan: 'Pembahasan lengkap.',
+            bab: 'Bab 1',
+            tingkat: 'sedang',
+          })),
+        },
+        tokensIn: 30,
+        tokensOut: 30,
+      };
+    },
+  });
+
+  // Suntik cache lama rusak: hanya 5 soal tersimpan walau permintaan count=25
+  const normalizedObj = {
+    chapterName: 'semua',
+    chapterPosition: 'all',
+    count: 25,
+    difficulty: 'sedang',
+    explanationMode: 'modul',
+    feature: 'quiz',
+    maxPoints: 8,
+    style: 'singkat',
+  };
+  const crypto = await import('crypto');
+  const paramsHash = crypto.createHash('sha256').update(JSON.stringify(normalizedObj)).digest('hex');
+  await deps.saveGeneration({
+    user_id: 'user-123',
+    module_id: VALID_MODULE_ID,
+    feature: 'quiz',
+    params_hash: paramsHash,
+    prompt_version: deps.promptVersion,
+    result: {
+      soal: Array.from({ length: 5 }, (_, i) => ({
+        nomor: i + 1,
+        pertanyaan: `Cache rusak ${i + 1}`,
+        opsi: { A: '1', B: '2', C: '3', D: '4' },
+        kunci: 'A',
+        penjelasan: 'Pendek.',
+      })),
+    },
+    tokens_in: 10,
+    tokens_out: 10,
+  });
+
+  const res = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: { count: 25, difficulty: 'sedang', explanationMode: 'modul' },
+  });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.cached, false, 'Cache 5 soal harus dilewati untuk request 25 soal');
+  assert.equal(json.result.soal.length, 25);
 });
