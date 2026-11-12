@@ -1,5 +1,5 @@
 import 'server-only';
-import { getGeminiClient, getModelCandidates, openGeminiSseStream } from './client.ts';
+import { getGeminiClient, getModelCandidates, markModelDegraded, openGeminiSseStream } from './client.ts';
 import { renderPrompt, type RenderedPrompt } from './render-prompt.ts';
 import { cleanAndParseJson } from '../validators/index.ts';
 import { trimContinuationOverlap } from './sse-stream.ts';
@@ -140,21 +140,144 @@ export function formatFriendlyErrorMessage(error: any): string {
   return 'Terjadi kendala saat berkomunikasi dengan asisten AI. Silakan coba kembali sesaat lagi.';
 }
 
+const HEDGE_DELAY_MS = 3500;
+
+interface SingleModelInvokeResult<T> {
+  parsed: T;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+async function invokeSingleModel<T>(
+  ai: ReturnType<typeof getGeminiClient>,
+  model: string,
+  contents: string,
+  config: Record<string, any>,
+  timeoutMs: number,
+  parseFn: (rawText: string) => T
+): Promise<SingleModelInvokeResult<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const callPromise = ai.models.generateContent({
+      model,
+      contents,
+      config: {
+        ...config,
+        httpOptions: {
+          timeout: timeoutMs,
+        },
+      },
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    });
+
+    const response: any = await Promise.race([callPromise, timeoutPromise]);
+    const rawText = (response?.text || '').toString();
+    const parsed = parseFn(rawText);
+
+    return {
+      parsed,
+      tokensIn: response?.usageMetadata?.promptTokenCount || Math.ceil(contents.length / 4),
+      tokensOut: response?.usageMetadata?.candidatesTokenCount || Math.ceil(rawText.length / 4),
+    };
+  } catch (err: any) {
+    if (shouldRotateModel(err)) {
+      markModelDegraded(model);
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Menjalankan panggilan ke model utama, dan bila belum selesai dalam 3.5 detik (atau gagal cepat)
+ * sementara ada model cadangan sehat, otomatis meluncurkan cadangan secara paralel (hedged request)
+ * agar tidak pernah terjebak 15-26 detik hingga memicu 504 Gateway Timeout.
+ */
+async function invokeWithHedgedFallback<T>(params: {
+  ai: ReturnType<typeof getGeminiClient>;
+  primaryModel: string;
+  fallbackModel?: string;
+  contents: string;
+  config: Record<string, any>;
+  timeoutMs: number;
+  parseFn: (rawText: string) => T;
+}): Promise<SingleModelInvokeResult<T> & { usedFallback: boolean }> {
+  const { ai, primaryModel, fallbackModel, contents, config, timeoutMs, parseFn } = params;
+
+  if (!fallbackModel || fallbackModel === primaryModel || timeoutMs <= HEDGE_DELAY_MS + 1500) {
+    const res = await invokeSingleModel(ai, primaryModel, contents, config, timeoutMs, parseFn);
+    return { ...res, usedFallback: false };
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let fallbackStarted = false;
+    let primaryErr: any = null;
+    let primaryDone = false;
+    let fallbackDone = false;
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const finishSuccess = (val: SingleModelInvokeResult<T>, usedFallback: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      resolve({ ...val, usedFallback });
+    };
+
+    const startFallback = () => {
+      if (settled || fallbackStarted) return;
+      fallbackStarted = true;
+      const fallbackTimeout = Math.max(4000, timeoutMs - 1000);
+      invokeSingleModel(ai, fallbackModel, contents, config, fallbackTimeout, parseFn)
+        .then((res) => finishSuccess(res, true))
+        .catch((fErr) => {
+          fallbackDone = true;
+          if (!settled && primaryDone) {
+            settled = true;
+            reject(fErr || primaryErr);
+          }
+        });
+    };
+
+    hedgeTimer = setTimeout(startFallback, HEDGE_DELAY_MS);
+
+    invokeSingleModel(ai, primaryModel, contents, config, timeoutMs, parseFn)
+      .then((res) => finishSuccess(res, false))
+      .catch((pErr) => {
+        primaryDone = true;
+        primaryErr = pErr;
+        if (hedgeTimer) clearTimeout(hedgeTimer);
+        if (shouldRotateModel(pErr)) {
+          startFallback();
+        } else if (!fallbackStarted || fallbackDone) {
+          settled = true;
+          reject(pErr);
+        }
+      });
+  });
+}
+
 /**
  * Panggilan Gemini untuk menghasilkan teks (Ringkasan, Mnemonic, QA)
- * dengan rotasi fallback model saat overload/503 dan batas waktu terkontrol.
+ * dengan hedged fallback model saat overload/503 dan batas waktu terkontrol.
  */
 export async function generateText(options: GenerationOptions): Promise<GenerationResult<string>> {
   const {
     promptName,
     variables,
     customSystemInstruction,
-    attemptTimeoutMs = 20000,
-    totalDeadlineMs = 48000,
+    extraSystemInstruction,
+    attemptTimeoutMs = 15000,
+    totalDeadlineMs = 45000,
   } = options;
 
   const rendered: RenderedPrompt = renderPrompt(promptName, variables);
-  const systemInstruction = customSystemInstruction || rendered.systemInstruction;
+  const baseInstruction = customSystemInstruction || rendered.systemInstruction;
+  const systemInstruction = [baseInstruction, extraSystemInstruction].filter(Boolean).join('\n\n');
 
   const ai = getGeminiClient();
   const candidates = getModelCandidates();
@@ -175,43 +298,35 @@ export async function generateText(options: GenerationOptions): Promise<Generati
     }
 
     const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
-    const hasFallbackAhead = modelIdx + 1 < candidates.length;
-    const effectiveTimeout = hasFallbackAhead
-      ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 13000)
+    const fallbackModel = modelIdx + 1 < candidates.length ? candidates[modelIdx + 1] : undefined;
+    const effectiveTimeout = fallbackModel
+      ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 9500)
       : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
 
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const callPromise = ai.models.generateContent({
-        model: activeModel,
+      const result = await invokeWithHedgedFallback({
+        ai,
+        primaryModel: activeModel,
+        fallbackModel,
         contents: rendered.promptText,
         config: {
           systemInstruction,
           temperature: options.temperature ?? 0.2,
-          httpOptions: {
-            timeout: effectiveTimeout,
-          },
+        },
+        timeoutMs: effectiveTimeout,
+        parseFn: (rawText) => {
+          const text = rawText.trim();
+          if (!text) {
+            throw new Error('Respons model kosong atau bukan string.');
+          }
+          return text;
         },
       });
 
-      const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('timeout')), effectiveTimeout);
-      });
-
-      const response: any = await Promise.race([callPromise, timeoutPromise]);
-
-      const text = (response?.text || '').toString().trim();
-      if (!text) {
-        throw new Error('Respons model kosong atau bukan string.');
-      }
-
-      const tokensIn = response.usageMetadata?.promptTokenCount || Math.ceil(rendered.promptText.length / 4);
-      const tokensOut = response.usageMetadata?.candidatesTokenCount || Math.ceil(text.length / 4);
-
       return {
-        data: text,
-        tokensIn,
-        tokensOut,
+        data: result.parsed,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
       };
     } catch (err: any) {
       lastError = err;
@@ -222,16 +337,14 @@ export async function generateText(options: GenerationOptions): Promise<Generati
 
       if (attempt < MAX_RETRIES - 1 && isTransientError(err)) {
         if (shouldRotateModel(err) && modelIdx + 1 < candidates.length) {
-          modelIdx++;
+          modelIdx += fallbackModel ? 2 : 1;
           await waitWithJitter(0, 150);
         } else {
-          await waitWithJitter(attempt, 600);
+          await waitWithJitter(attempt, 500);
         }
         continue;
       }
       break;
-    } finally {
-      if (timer) clearTimeout(timer);
     }
   }
 
@@ -288,40 +401,32 @@ export async function generateJson<T = any>(
       }
 
       const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
-      const hasFallbackAhead = modelIdx + 1 < candidates.length;
-      const effectiveTimeout = hasFallbackAhead
-        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 18000)
+      const fallbackModel = modelIdx + 1 < candidates.length ? candidates[modelIdx + 1] : undefined;
+      const effectiveTimeout = fallbackModel
+        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 9500)
         : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
 
-      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const callPromise = ai.models.generateContent({
-          model: activeModel,
+        const result = await invokeWithHedgedFallback({
+          ai,
+          primaryModel: activeModel,
+          fallbackModel,
           contents: rendered.promptText,
           config: {
             systemInstruction,
             responseMimeType: 'application/json',
             temperature: options.temperature ?? 0.2,
-            httpOptions: {
-              timeout: effectiveTimeout,
-            },
+          },
+          timeoutMs: effectiveTimeout,
+          parseFn: (rawText) => {
+            const parsedJson = cleanAndParseJson(rawText);
+            return validatorFn ? validatorFn(parsedJson) : parsedJson;
           },
         });
 
-        const timeoutPromise = new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('timeout')), effectiveTimeout);
-        });
-
-        const response: any = await Promise.race([callPromise, timeoutPromise]);
-        const rawText = (response?.text || '').toString();
-
-        const tIn = response.usageMetadata?.promptTokenCount || Math.ceil(rendered.promptText.length / 4);
-        const tOut = response.usageMetadata?.candidatesTokenCount || Math.ceil(rawText.length / 4);
-        totalTokensIn += tIn;
-        totalTokensOut += tOut;
-
-        const parsedJson = cleanAndParseJson(rawText);
-        return validatorFn ? validatorFn(parsedJson) : parsedJson;
+        totalTokensIn += result.tokensIn;
+        totalTokensOut += result.tokensOut;
+        return result.parsed;
       } catch (err: any) {
         lastError = err;
         console.warn(
@@ -331,16 +436,14 @@ export async function generateJson<T = any>(
 
         if (attempt < MAX_RETRIES - 1 && isTransientError(err)) {
           if (shouldRotateModel(err) && modelIdx + 1 < candidates.length) {
-            modelIdx++;
+            modelIdx += fallbackModel ? 2 : 1;
             await waitWithJitter(0, 150);
           } else {
-            await waitWithJitter(attempt, 600);
+            await waitWithJitter(attempt, 500);
           }
           continue;
         }
         break;
-      } finally {
-        if (timer) clearTimeout(timer);
       }
     }
 
@@ -548,7 +651,7 @@ export async function generateStream(
     activeStreamModel = candidates[Math.min(modelIdx, candidates.length - 1)];
     const hasFallbackAhead = modelIdx + 1 < candidates.length;
     const connectSignal = hasFallbackAhead
-      ? AbortSignal.any([abortController.signal, AbortSignal.timeout(Math.min(10000, remaining - 2000))])
+      ? AbortSignal.any([abortController.signal, AbortSignal.timeout(Math.min(5000, remaining - 2000))])
       : abortController.signal;
 
     try {
@@ -563,6 +666,9 @@ export async function generateStream(
       break;
     } catch (err: any) {
       openError = err;
+      if (shouldRotateModel(err)) {
+        markModelDegraded(activeStreamModel);
+      }
       if (abortController.signal.aborted) break;
 
       if (attempt < MAX_OPEN_RETRIES - 1 && isTransientError(err)) {

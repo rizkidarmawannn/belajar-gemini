@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'crypto';
 import { renderPrompt, sanitizeModuleContent } from '../src/lib/gemini/render-prompt.ts';
-import { getModelName, getModelCandidates } from '../src/lib/gemini/client.ts';
+import {
+  getModelName,
+  getModelCandidates,
+  markModelDegraded,
+  resetModelHealthForTesting,
+} from '../src/lib/gemini/client.ts';
 import { calculateEffectiveTimeout, formatFriendlyErrorMessage } from '../src/lib/gemini/generate.ts';
 import {
   cleanAndParseJson,
@@ -19,6 +24,9 @@ import {
   handleGenerate,
   splitIntoBalancedBatchCounts,
   isCacheCompleteForRequest,
+  buildBalancedModuleExcerpt,
+  signBatchToken,
+  verifyBatchToken,
 } from '../src/lib/gemini/handler.ts';
 
 // ==================== 1. TEST MODEL NAME & CONFIG ====================
@@ -1170,4 +1178,112 @@ test('Route Handler ASLI: cache lama yang terlanjur berisi 5 soal untuk perminta
   const json = await res.json();
   assert.equal(json.cached, false, 'Cache 5 soal harus dilewati untuk request 25 soal');
   assert.equal(json.result.soal.length, 25);
+});
+
+// ==================== 14. TEST CLIENT MICRO-BATCH TOKEN, EXCERPT & MODEL HEALTH COOLDOWN ====================
+
+test('markModelDegraded: memindahkan model yang baru gagal ke urutan terakhir selama cooldown', () => {
+  const origModel = process.env.GEMINI_MODEL;
+  try {
+    resetModelHealthForTesting();
+    process.env.GEMINI_MODEL = 'gemini-3.5-flash-lite';
+    const before = getModelCandidates();
+    assert.equal(before[0], 'gemini-3.5-flash-lite');
+
+    markModelDegraded('gemini-3.5-flash-lite', 60_000);
+    const after = getModelCandidates();
+    assert.equal(after[0], 'gemini-3.1-flash-lite');
+    assert.equal(after[after.length - 1], 'gemini-3.5-flash-lite');
+  } finally {
+    resetModelHealthForTesting();
+    if (origModel === undefined) delete process.env.GEMINI_MODEL;
+    else process.env.GEMINI_MODEL = origModel;
+  }
+});
+
+test('buildBalancedModuleExcerpt: membatasi modul raksasa ke maxChars sambil menjaga tiap bab terwakili', () => {
+  const hugeChunks = [
+    { chapter_title: 'Bab 1 Pendahuluan', content: 'A'.repeat(30000) },
+    { chapter_title: 'Bab 2 Inti Materi', content: 'B'.repeat(30000) },
+    { chapter_title: 'Bab 3 Penutup', content: 'C'.repeat(30000) },
+  ];
+  const excerpt = buildBalancedModuleExcerpt(hugeChunks, 12000);
+  assert.ok(excerpt.length <= 12000);
+  assert.ok(excerpt.includes('Bab 1 Pendahuluan'));
+  assert.ok(excerpt.includes('Bab 2 Inti Materi'));
+  assert.ok(excerpt.includes('Bab 3 Penutup'));
+});
+
+test('Route Handler ASLI: micro-batch kuis dengan batchToken memakai 1 kuota, menolak token palsu 403', async () => {
+  let seq = 0;
+  const deps = createMockDeps({
+    async callGeminiJson(opts) {
+      seq++;
+      const n = Number(opts.variables.jumlah) || 5;
+      return {
+        data: {
+          soal: Array.from({ length: n }, (_, i) => ({
+            nomor: i + 1,
+            pertanyaan: `Soal micro batch ${seq}-${i + 1}`,
+            opsi: { A: '1', B: '2', C: '3', D: '4' },
+            kunci: 'A',
+            penjelasan: 'Penjelasan singkat.',
+            bab: 'Bab 1',
+            tingkat: 'sedang',
+          })),
+        },
+        tokensIn: 20,
+        tokensOut: 20,
+      };
+    },
+  });
+
+  // Batch 0 memesan kuota 1 kali & menerbitkan batchToken
+  const res0 = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: { count: 5, difficulty: 'sedang', explanationMode: 'modul', batchIndex: 0, batchTotal: 5 },
+  });
+  assert.equal(res0.status, 200);
+  const json0 = await res0.json();
+  assert.ok(json0.batchToken);
+  assert.equal(deps._getUsageRecords().length, 1);
+
+  const checkValid = verifyBatchToken(json0.batchToken, 'user-123', VALID_MODULE_ID, 8);
+  assert.equal(checkValid.valid, true);
+  assert.equal(verifyBatchToken(json0.batchToken, 'other-user', VALID_MODULE_ID, 8).valid, false);
+  const forged = signBatchToken('other-user', VALID_MODULE_ID, 'log-1', 8);
+  assert.equal(verifyBatchToken(forged, 'user-123', VALID_MODULE_ID, 8).valid, false);
+
+  // Batch 1 memakai batchToken -> TIDAK mengurangi kuota lagi
+  const res1 = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: {
+      count: 5,
+      difficulty: 'sedang',
+      explanationMode: 'modul',
+      batchIndex: 1,
+      batchTotal: 5,
+      batchToken: json0.batchToken,
+      excludeQuestions: ['Soal micro batch 1-1'],
+    },
+  });
+  assert.equal(res1.status, 200);
+  assert.equal(deps._getUsageRecords().length, 1, 'Batch lanjutan tidak boleh memotong kuota kedua kali');
+
+  // Batch lanjutan dengan token palsu -> ditolak 403
+  const resForged = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz',
+    params: {
+      count: 5,
+      difficulty: 'sedang',
+      explanationMode: 'modul',
+      batchIndex: 2,
+      batchTotal: 5,
+      batchToken: 'palsu.8.deadbeef',
+    },
+  });
+  assert.equal(resForged.status, 403);
 });

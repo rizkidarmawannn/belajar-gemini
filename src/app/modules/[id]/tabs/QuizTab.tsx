@@ -93,6 +93,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
   const [quizDifficulty, setQuizDifficulty] = useState<'mudah' | 'sedang' | 'sulit' | 'campuran'>('sedang');
   const [quizExplanationMode, setQuizExplanationMode] = useState<ExplanationMode>('keduanya');
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>(initialAttempts);
+  const [quizProgress, setQuizProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Cache lokal & status loading untuk pendalaman penjelasan soal ("Minta Penjelasan Lagi")
   const [deepExplanations, setDeepExplanations] = useState<Record<string, DeepExplainEntry>>({});
@@ -100,8 +101,65 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
   const [loadingDeepKey, setLoadingDeepKey] = useState<string | null>(null);
   const [deepErrors, setDeepErrors] = useState<Record<string, string>>({});
 
+  const requestQuizBatch = async (
+    params: Record<string, any>,
+    maxRetries = 1
+  ): Promise<{ soal: QuizQuestion[]; batchToken?: string }> => {
+    let lastErr: any = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            moduleId,
+            feature: 'quiz',
+            params,
+          }),
+        });
+
+        if (!response.ok) {
+          const msg = await parseErrorResponse(response, 'Gagal membuat kuis AI.');
+          const isRetryableStatus = [500, 502, 503, 504].includes(response.status);
+          if (isRetryableStatus && attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, 600));
+            continue;
+          }
+          throw new Error(msg);
+        }
+
+        let json: any = null;
+        try {
+          json = await response.json();
+        } catch {
+          throw new Error('Respons dari server tidak valid (bukan JSON).');
+        }
+
+        const questions: QuizQuestion[] = json?.result?.soal || [];
+        return { soal: questions, batchToken: json?.batchToken };
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.message || '').toLowerCase();
+        if (
+          attempt < maxRetries &&
+          (msg.includes('502') ||
+            msg.includes('503') ||
+            msg.includes('504') ||
+            msg.includes('timeout') ||
+            msg.includes('sibuk'))
+        ) {
+          await new Promise((r) => setTimeout(r, 600));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('Gagal membuat kuis AI.');
+  };
+
   const handleGenerateQuiz = async () => {
     setIsGeneratingQuiz(true);
+    setQuizProgress(quizCount > 5 ? { done: 0, total: quizCount } : null);
     onError('');
     setIsQuizFinished(false);
     setCurrentQIndex(0);
@@ -113,37 +171,144 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
     setDeepErrors({});
 
     try {
-      const response = await fetch('/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          moduleId,
-          feature: 'quiz',
-          params: {
+      if (quizCount <= 5) {
+        const res = await requestQuizBatch(
+          {
             count: quizCount,
             difficulty: quizDifficulty,
             explanationMode: quizExplanationMode,
           },
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(await parseErrorResponse(response, 'Gagal membuat kuis AI.'));
+          1
+        );
+        if (res.soal.length === 0) {
+          throw new Error('AI tidak berhasil menyusun soal kuis yang valid.');
+        }
+        setQuizQuestions(res.soal.slice(0, quizCount));
+        return;
       }
 
-      let json: any = null;
-      try {
-        json = await response.json();
-      } catch {
-        throw new Error('Respons dari server tidak valid (bukan JSON).');
+      // Untuk > 5 soal (10, 15, 20, 25, 30, 50, 75, 100):
+      // Pecah menjadi micro-batch <= 5 soal per request HTTP agar tiap request selesai < 8 detik
+      // (bebas 504 Gateway Timeout di serverless) sambil menampilkan progres langsung.
+      const totalBatches = Math.ceil(quizCount / 5);
+      const baseCount = Math.floor(quizCount / totalBatches);
+      const remainder = quizCount % totalBatches;
+      const subCounts = Array.from(
+        { length: totalBatches },
+        (_, idx) => baseCount + (idx < remainder ? 1 : 0)
+      );
+
+      const collectedMap = new Map<string, QuizQuestion>();
+      const addUniqueQuestions = (list: QuizQuestion[]) => {
+        for (const q of list) {
+          const key = String(q?.pertanyaan || '').trim().toLowerCase();
+          if (key && !collectedMap.has(key)) {
+            collectedMap.set(key, q);
+          }
+        }
+        setQuizProgress({ done: Math.min(quizCount, collectedMap.size), total: quizCount });
+      };
+
+      const getExcludeList = () =>
+        Array.from(collectedMap.values())
+          .slice(-25)
+          .map((q) => String(q.pertanyaan || '').trim().slice(0, 140))
+          .filter(Boolean);
+
+      // Langkah 1: Batch 0 memesan kuota sekali & memperoleh signed batchToken
+      const firstBatch = await requestQuizBatch(
+        {
+          count: subCounts[0],
+          difficulty: quizDifficulty,
+          explanationMode: quizExplanationMode,
+          batchIndex: 0,
+          batchTotal: totalBatches,
+        },
+        1
+      );
+      addUniqueQuestions(firstBatch.soal);
+
+      const batchToken = firstBatch.batchToken;
+      if (!batchToken) {
+        throw new Error('Gagal memulai sesi batch kuis dari server.');
       }
 
-      const questions = json?.result?.soal || [];
-      if (questions.length === 0) {
-        throw new Error('AI tidak berhasil menyusun soal kuis yang valid.');
+      // Langkah 2: Jalankan sisa batch secara paralel terkendali (maks 3 bersamaan)
+      const remainingIndices = Array.from({ length: totalBatches - 1 }, (_, i) => i + 1);
+      let cursor = 0;
+      const workerCount = Math.min(3, remainingIndices.length);
+      let batchErrors = 0;
+      let lastBatchErrMsg = '';
+
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (cursor < remainingIndices.length) {
+            const batchIdx = remainingIndices[cursor++];
+            try {
+              const res = await requestQuizBatch(
+                {
+                  count: subCounts[batchIdx],
+                  difficulty: quizDifficulty,
+                  explanationMode: quizExplanationMode,
+                  batchIndex: batchIdx,
+                  batchTotal: totalBatches,
+                  batchToken,
+                  excludeQuestions: getExcludeList(),
+                },
+                2
+              );
+              addUniqueQuestions(res.soal);
+            } catch (err: any) {
+              batchErrors++;
+              lastBatchErrMsg = err?.message || '';
+            }
+          }
+        })
+      );
+
+      // Langkah 3: Top-up otomatis bila total masih kurang dari target
+      for (let topUp = 0; topUp < 2 && collectedMap.size < quizCount; topUp++) {
+        const missing = quizCount - collectedMap.size;
+        const reqExtra = Math.min(5, missing + 1);
+        try {
+          const extraRes = await requestQuizBatch(
+            {
+              count: reqExtra,
+              difficulty: quizDifficulty,
+              explanationMode: quizExplanationMode,
+              batchIndex: totalBatches + topUp,
+              batchTotal: totalBatches,
+              batchToken,
+              excludeQuestions: getExcludeList(),
+            },
+            1
+          );
+          const beforeSize = collectedMap.size;
+          addUniqueQuestions(extraRes.soal);
+          if (collectedMap.size === beforeSize) break;
+        } catch (err: any) {
+          lastBatchErrMsg = err?.message || lastBatchErrMsg;
+          break;
+        }
       }
 
-      setQuizQuestions(questions);
+      const minAcceptable = quizCount <= 10 ? quizCount : Math.ceil(quizCount * 0.85);
+      if (collectedMap.size === 0 || collectedMap.size < minAcceptable) {
+        throw new Error(
+          lastBatchErrMsg && collectedMap.size === 0
+            ? lastBatchErrMsg
+            : `Baru terkumpul ${collectedMap.size} dari ${quizCount} soal (${batchErrors} batch mengalami kendala). Silakan klik "Coba Lagi".`
+        );
+      }
+
+      const finalQuestions = Array.from(collectedMap.values())
+        .slice(0, quizCount)
+        .map((q, idx) => ({
+          ...q,
+          nomor: idx + 1,
+        }));
+
+      setQuizQuestions(finalQuestions);
     } catch (err: any) {
       const friendly = formatFriendlyErrorMessage(err);
       if (!friendly.isUserAbort) {
@@ -151,6 +316,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       }
     } finally {
       setIsGeneratingQuiz(false);
+      setQuizProgress(null);
     }
   };
 
@@ -511,11 +677,16 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       </div>
 
       {/* Status Saat Menyusun Soal Banyak */}
-      {isGeneratingQuiz && quizCount >= 10 && (
-        <div className="p-4 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200 text-xs flex items-center gap-3 animate-pulse">
+      {isGeneratingQuiz && (quizCount >= 10 || quizProgress) && (
+        <div className="p-4 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200 text-xs flex items-center gap-3">
           <Loader2 className="w-4 h-4 animate-spin text-indigo-600 flex-shrink-0" />
           <span>
-            AI sedang menyusun <strong>{quizCount} butir soal</strong> secara paralel per batch agar lengkap dan akurat. Mohon tunggu sebentar...
+            AI sedang menyusun <strong>{quizCount} butir soal</strong> secara bertahap per 5 soal agar bebas timeout...{' '}
+            {quizProgress && (
+              <strong className="text-indigo-700 dark:text-indigo-300">
+                ({quizProgress.done} / {quizProgress.total} soal siap)
+              </strong>
+            )}
           </span>
         </div>
       )}

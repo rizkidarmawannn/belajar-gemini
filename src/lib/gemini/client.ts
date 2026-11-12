@@ -111,11 +111,22 @@ export function getModelName(): string {
 }
 
 const DEFAULT_FLASH_FALLBACK_MODELS = ['gemini-3.1-flash-lite', 'gemini-3.5-flash'];
+const DEGRADED_COOLDOWN_MS = 120_000;
+const degradedUntilMap = new Map<string, number>();
+
+export function markModelDegraded(model: string, durationMs = DEGRADED_COOLDOWN_MS): void {
+  if (!model) return;
+  degradedUntilMap.set(model.trim(), Date.now() + durationMs);
+}
+
+export function resetModelHealthForTesting(): void {
+  degradedUntilMap.clear();
+}
 
 /**
- * Menghasilkan daftar kandidat model terurut: model utama dari GEMINI_MODEL diikuti
- * GEMINI_FALLBACK_MODELS (opsional) dan model Flash alternatif yang sehat agar tetap
- * tersedia saat model utama mengalami lonjakan beban 503 atau lambat sementara.
+ * Menghasilkan daftar kandidat model terurut: model sehat diprioritaskan di depan,
+ * sedangkan model yang baru saja gagal 503/timeout diturunkan sementara ke belakang
+ * selama cooldown agar request paralel & berikutnya tidak ikut menunggu 10-20 detik.
  */
 export function getModelCandidates(primaryModel?: string): string[] {
   const primary = (primaryModel || getModelName()).trim();
@@ -139,5 +150,17 @@ export function getModelCandidates(primaryModel?: string): string[] {
     }
   }
 
-  return candidates;
+  const now = Date.now();
+  const healthy: string[] = [];
+  const degraded: string[] = [];
+  for (const m of candidates) {
+    const until = degradedUntilMap.get(m) ?? 0;
+    if (until > now) {
+      degraded.push(m);
+    } else {
+      healthy.push(m);
+    }
+  }
+
+  return [...healthy, ...degraded];
 }

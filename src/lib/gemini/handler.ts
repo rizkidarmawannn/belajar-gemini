@@ -101,6 +101,84 @@ function buildQuizAvoidDuplicatesInstruction(
   return parts.length > 0 ? parts.join('\n\n') : undefined;
 }
 
+const MAX_FULL_MODULE_CHARS = 45000;
+
+/**
+ * Merangkai teks modul dengan batas karakter aman agar panggilan JSON ke Gemini
+ * tidak mengirim ratusan ribu karakter sekaligus (penyebab latency tinggi & 504).
+ */
+export function buildBalancedModuleExcerpt(
+  chunks: Array<{ chapter_title?: string; content?: string }>,
+  maxChars = MAX_FULL_MODULE_CHARS
+): string {
+  const renderedChunks = chunks.map((c) => `${c.chapter_title || 'Bab'}\n\n${c.content || ''}`);
+  const joined = renderedChunks.join('\n\n---\n\n');
+  if (joined.length <= maxChars || chunks.length === 0) {
+    return joined;
+  }
+
+  const perChunkBudget = Math.max(450, Math.floor((maxChars - chunks.length * 40) / chunks.length));
+  return chunks
+    .map((c) => {
+      const title = c.chapter_title || 'Bab';
+      const body = String(c.content || '').trim();
+      const excerpt = body.length > perChunkBudget ? `${body.slice(0, perChunkBudget).trim()}...` : body;
+      return `${title}\n\n${excerpt}`;
+    })
+    .join('\n\n---\n\n')
+    .slice(0, maxChars);
+}
+
+function getBatchSigningSecret(): string {
+  return (
+    process.env.BATCH_SIGNING_SECRET ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.GEMINI_API_KEY ||
+    'dev-local-batch-secret'
+  );
+}
+
+export function signBatchToken(
+  userId: string,
+  moduleId: string,
+  logId: string,
+  maxBatches: number
+): string {
+  const safeLogId = String(logId).replace(/\./g, '_');
+  const payload = `${userId}:${moduleId}:${safeLogId}:${maxBatches}`;
+  const mac = crypto.createHmac('sha256', getBatchSigningSecret()).update(payload).digest('hex');
+  return `${safeLogId}.${maxBatches}.${mac}`;
+}
+
+export function verifyBatchToken(
+  token: string,
+  userId: string,
+  moduleId: string,
+  expectedMaxBatches: number
+): { valid: boolean; logId?: string } {
+  if (!token || typeof token !== 'string') return { valid: false };
+  const parts = token.split('.');
+  if (parts.length !== 3) return { valid: false };
+  const [logId, maxStr, mac] = parts;
+  if (!logId || !mac || Number(maxStr) !== expectedMaxBatches) return { valid: false };
+
+  const expectedPayload = `${userId}:${moduleId}:${logId}:${expectedMaxBatches}`;
+  const expectedMac = crypto
+    .createHmac('sha256', getBatchSigningSecret())
+    .update(expectedPayload)
+    .digest('hex');
+
+  try {
+    const a = Buffer.from(mac, 'hex');
+    const b = Buffer.from(expectedMac, 'hex');
+    if (a.length === 0 || a.length !== b.length) return { valid: false };
+    if (!crypto.timingSafeEqual(a, b)) return { valid: false };
+    return { valid: true, logId };
+  } catch {
+    return { valid: false };
+  }
+}
+
 // Helper merangkai jendela cuplikan modul terfokus agar pendalaman 1 soal tetap cepat (< 8.000 karakter)
 function extractFocusedExcerpt(text: string, query: string, maxChars: number): string {
   if (!text || text.length <= maxChars) return text || '';
@@ -192,6 +270,10 @@ export const StrictParamsSchema = z
       .optional(),
     correctOption: z.enum(['A', 'B', 'C', 'D']).optional(),
     selectedOption: z.enum(['A', 'B', 'C', 'D']).optional(),
+    batchIndex: z.number().int().min(0).max(30).optional(),
+    batchTotal: z.number().int().min(1).max(25).optional(),
+    batchToken: z.string().max(240).optional(),
+    excludeQuestions: z.array(z.string().max(180)).max(40).optional(),
   })
   .strict({ message: 'Objek params memuat kunci yang tidak diizinkan.' });
 
@@ -296,13 +378,44 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     );
   }
 
-  // 4. Cek Cache (generations)
+  // 4. Cek Kontinuasi Batch Kuis & Cache (generations)
+  const isChunkedQuiz =
+    body.feature === 'quiz' && typeof body.params.batchTotal === 'number' && body.params.batchTotal > 1;
+  const batchIndex = body.params.batchIndex ?? 0;
+  const maxBatches = isChunkedQuiz ? Math.min(30, (body.params.batchTotal || 1) + 3) : 1;
+  const isContinuationBatch = isChunkedQuiz && batchIndex > 0;
+
+  let verifiedBatchLogId: string | undefined;
+  if (isContinuationBatch) {
+    if (batchIndex >= maxBatches) {
+      return Response.json(
+        { error: 'Indeks batch kuis melebihi batas sesi yang diizinkan.' },
+        { status: 403 }
+      );
+    }
+    const verified = verifyBatchToken(
+      body.params.batchToken || '',
+      user.id,
+      body.moduleId,
+      maxBatches
+    );
+    if (!verified.valid) {
+      return Response.json(
+        { error: 'Token sesi batch kuis tidak valid atau sudah berakhir. Silakan ulangi pembuatan kuis.' },
+        { status: 403 }
+      );
+    }
+    verifiedBatchLogId = verified.logId;
+  }
+
   // feature dan chapterPosition ditaruh SETELAH spread params agar params tidak dapat menimpanya!
   const normalizedObject: Record<string, any> = {
     ...body.params,
     feature: body.feature,
     chapterPosition: body.chapterPosition ?? 'all',
   };
+  delete normalizedObject.batchToken;
+  delete normalizedObject.excludeQuestions;
   const sortedKeys = Object.keys(normalizedObject).sort();
   const sortedParams: Record<string, any> = {};
   for (const k of sortedKeys) {
@@ -360,6 +473,16 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         feature: body.feature,
         result: cachedGen.result,
         usedChapters: cachedUsedChapters,
+        ...(isChunkedQuiz && batchIndex === 0
+          ? {
+              batchToken: signBatchToken(
+                user.id,
+                body.moduleId,
+                `cached-${crypto.randomUUID()}`,
+                maxBatches
+              ),
+            }
+          : {}),
         tokens: {
           in: cachedGen.tokens_in || 0,
           out: cachedGen.tokens_out || 0,
@@ -453,11 +576,22 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       moduleContent = chosenChunks
         .map((c: any) => `### ${c.chapter_title}\n\n${extractFocusedExcerpt(c.content || '', searchQuery, chapterCharBudget)}`)
         .join('\n\n---\n\n');
+    } else if (isChunkedQuiz && chunksData.length >= 2) {
+      const numSlices = Math.min(chunksData.length, body.params.batchTotal || 1);
+      const sliceIdx = batchIndex % numSlices;
+      const startIdx = Math.floor((sliceIdx * chunksData.length) / numSlices);
+      const endIdx = Math.floor(((sliceIdx + 1) * chunksData.length) / numSlices);
+      const slice = chunksData.slice(startIdx, Math.max(startIdx + 1, endIdx));
+      const candidateText = buildBalancedModuleExcerpt(slice, MAX_FULL_MODULE_CHARS);
+      moduleContent =
+        candidateText.trim().length >= 800
+          ? candidateText
+          : buildBalancedModuleExcerpt(chunksData, MAX_FULL_MODULE_CHARS);
     } else {
-      moduleContent = chunksData.map((c: any) => `${c.chapter_title}\n\n${c.content}`).join('\n\n---\n\n');
+      moduleContent = buildBalancedModuleExcerpt(chunksData, MAX_FULL_MODULE_CHARS);
     }
   } else {
-    moduleContent = `${chunksData.chapter_title}\n\n${chunksData.content}`;
+    moduleContent = `${chunksData.chapter_title}\n\n${chunksData.content}`.slice(0, MAX_FULL_MODULE_CHARS);
     if (body.feature === 'quiz_explain') {
       const chapterCharBudget = body.params.explanationMode === 'luar_modul' ? 2200 : 7500;
       const searchQuery = body.params.question || '';
@@ -468,37 +602,41 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     }
   }
 
-  // 6. RESERVASI ATOMIK KUOTA HARIAN (SEBELUM Gemini untuk SEMUA mode)
-  // Menutup celah race condition dari puluhan request paralel
+  // 6. RESERVASI ATOMIK KUOTA HARIAN (Hanya untuk panggilan baru / batchIndex === 0)
   const effectiveQuotaLimit = typeof deps.getUserQuotaLimit === 'function'
     ? deps.getUserQuotaLimit(user)
     : deps.dailyQuotaLimit;
 
   const initialTokensIn = Math.ceil(moduleContent.length / 4);
-  const { id: reservedLogId, error: reserveError } = await deps.reserveUsage(
-    user.id,
-    body.feature,
-    effectiveQuotaLimit,
-    initialTokensIn
-  );
+  let reservedLogId: number | string | null = verifiedBatchLogId ?? null;
 
-  // Gagal mengecek reservasi -> tolak request (FAIL CLOSED!)
-  if (reserveError) {
-    return Response.json(
-      { error: 'Gagal memverifikasi alokasi kuota harian sistem. Silakan coba sesaat lagi.' },
-      { status: 500 }
+  if (!isContinuationBatch) {
+    const { id: newLogId, error: reserveError } = await deps.reserveUsage(
+      user.id,
+      body.feature,
+      effectiveQuotaLimit,
+      initialTokensIn
     );
-  }
+    reservedLogId = newLogId;
 
-  // Kuota habis -> tolak dengan 429 (hanya berlaku jika batas kuota > 0)
-  if (effectiveQuotaLimit > 0 && !reservedLogId) {
-    return Response.json(
-      {
-        error: `Batas kuota harian Anda telah tercapai (maksimal ${effectiveQuotaLimit} panggilan per hari). Silakan coba lagi besok.`,
-        quotaLimit: effectiveQuotaLimit,
-      },
-      { status: 429 }
-    );
+    // Gagal mengecek reservasi -> tolak request (FAIL CLOSED!)
+    if (reserveError) {
+      return Response.json(
+        { error: 'Gagal memverifikasi alokasi kuota harian sistem. Silakan coba sesaat lagi.' },
+        { status: 500 }
+      );
+    }
+
+    // Kuota habis -> tolak dengan 429 (hanya berlaku jika batas kuota > 0)
+    if (effectiveQuotaLimit > 0 && !reservedLogId) {
+      return Response.json(
+        {
+          error: `Batas kuota harian Anda telah tercapai (maksimal ${effectiveQuotaLimit} panggilan per hari). Silakan coba lagi besok.`,
+          quotaLimit: effectiveQuotaLimit,
+        },
+        { status: 429 }
+      );
+    }
   }
 
   // 7. Mode Streaming untuk QA, Ringkasan, Mnemonic, dan Penjelasan Lanjutan Kuis
@@ -714,19 +852,28 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         tokensOut = 0;
 
         if (reqCount <= 8) {
-          // Permintaan kuis ringan (5-8 butir): 1 panggilan cepat + gap filling otomatis
+          // Permintaan kuis ringan atau micro-batch klien (5-8 butir): 1 panggilan cepat + gap filling
+          const excludeList = body.params.excludeQuestions || [];
+          const batchHint = isChunkedQuiz
+            ? `Fokus paket ${batchIndex + 1} dari ${body.params.batchTotal}: buat tepat ${reqCount} soal unik yang tidak mengulang soal paket lain.`
+            : undefined;
+          const extraQuizInst = buildQuizAvoidDuplicatesInstruction(excludeList, batchHint);
+
           const gen = await deps.callGeminiJson(
             {
               promptName: 'quiz',
               variables: {
                 jumlah: reqCount,
                 tingkat: body.params.difficulty,
-                bab: body.params.chapterName || 'semua',
+                bab: isChunkedQuiz
+                  ? `${body.params.chapterName || 'semua'} (Paket ${batchIndex + 1})`
+                  : body.params.chapterName || 'semua',
                 mode_penjelasan: expMode,
                 modul: moduleContent,
               },
-              attemptTimeoutMs: 20000,
-              totalDeadlineMs: 42000,
+              ...(extraQuizInst ? { extraSystemInstruction: extraQuizInst } : {}),
+              attemptTimeoutMs: 12000,
+              totalDeadlineMs: 22000,
             },
             (raw: unknown) => validateAndSanitizeQuiz(raw, body.params.difficulty),
             reqCount,
@@ -991,8 +1138,10 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         return Response.json({ error: 'Fitur tidak didukung.' }, { status: 400 });
     }
   } catch (geminiCallErr: any) {
-    // Bila Gemini gagal total sebelum mengembalikan hasil, REFUND kuota reservasi!
-    await deps.deleteUsageLog(reservedLogId);
+    // Bila Gemini gagal total sebelum mengembalikan hasil, REFUND kuota reservasi (hanya pada pemilik kuota utama)
+    if (!isContinuationBatch) {
+      await deps.deleteUsageLog(reservedLogId);
+    }
     return Response.json(
       { error: geminiCallErr.message || 'Terjadi kesalahan sistem saat memanggil layanan AI.' },
       { status: 500 }
@@ -1001,10 +1150,12 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
 
   // 9. Update Baris Reservasi usage_log dan Simpan ke generations Cache
   // Pisahkan try/catch agar kegagalan cache tidak menggagalkan usage_log atau membatalkan hasil ke pengguna
-  try {
-    await deps.updateUsageLog(reservedLogId, tokensIn, tokensOut);
-  } catch (logErr: any) {
-    console.error('[Generate Route] Gagal update usage_log:', logErr?.message || logErr);
+  if (!isContinuationBatch) {
+    try {
+      await deps.updateUsageLog(reservedLogId, tokensIn, tokensOut);
+    } catch (logErr: any) {
+      console.error('[Generate Route] Gagal update usage_log:', logErr?.message || logErr);
+    }
   }
 
   if (isCacheCompleteForRequest(body.feature, resultData, body.params.count || 5)) {
@@ -1030,6 +1181,16 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
     feature: body.feature,
     result: resultData,
     usedChapters: usedChaptersPayload,
+    ...(isChunkedQuiz && batchIndex === 0
+      ? {
+          batchToken: signBatchToken(
+            user.id,
+            body.moduleId,
+            String(reservedLogId || `ok-${crypto.randomUUID()}`),
+            maxBatches
+          ),
+        }
+      : {}),
     tokens: {
       in: tokensIn,
       out: tokensOut,
