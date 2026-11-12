@@ -877,6 +877,8 @@ test('getModelCandidates: menyusun daftar kandidat model utama + fallback sehat 
     const list = getModelCandidates();
     assert.equal(list[0], 'gemini-3.5-flash-lite');
     assert.ok(list.includes('gemini-3.1-flash-lite'));
+    assert.ok(list.includes('gemini-3-flash-preview'));
+    assert.ok(list.includes('gemini-3.6-flash'));
     assert.ok(list.includes('gemini-3.5-flash'));
     assert.equal(new Set(list).size, list.length);
 
@@ -886,6 +888,8 @@ test('getModelCandidates: menyusun daftar kandidat model utama + fallback sehat 
       'gemini-3.5-flash-lite',
       'gemini-3.5-flash',
       'gemini-3.1-flash-lite',
+      'gemini-3-flash-preview',
+      'gemini-3.6-flash',
     ]);
 
     process.env.GEMINI_DISABLE_MODEL_FALLBACK = 'true';

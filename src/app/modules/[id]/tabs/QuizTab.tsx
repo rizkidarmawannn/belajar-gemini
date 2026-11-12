@@ -188,9 +188,10 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
       }
 
       // Untuk > 5 soal (10, 15, 20, 25, 30, 50, 75, 100):
-      // Pecah menjadi micro-batch <= 5 soal per request HTTP agar tiap request selesai < 8 detik
-      // (bebas 504 Gateway Timeout di serverless) sambil menampilkan progres langsung.
-      const totalBatches = Math.ceil(quizCount / 5);
+      // Pecah menjadi micro-batch kecil (4 soal untuk mode 'keduanya', 5 soal untuk mode lainnya)
+      // agar tiap request HTTP cepat selesai (< 12 detik) bebas timeout sambil menampilkan progres langsung.
+      const maxBatchSize = quizExplanationMode === 'keduanya' ? 4 : 5;
+      const totalBatches = Math.ceil(quizCount / maxBatchSize);
       const baseCount = Math.floor(quizCount / totalBatches);
       const remainder = quizCount % totalBatches;
       const subCounts = Array.from(

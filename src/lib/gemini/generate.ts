@@ -140,7 +140,7 @@ export function formatFriendlyErrorMessage(error: any): string {
   return 'Terjadi kendala saat berkomunikasi dengan asisten AI. Silakan coba kembali sesaat lagi.';
 }
 
-const HEDGE_DELAY_MS = 3500;
+const HEDGE_DELAY_MS = 2500;
 
 interface SingleModelInvokeResult<T> {
   parsed: T;
@@ -291,7 +291,10 @@ export async function generateText(options: GenerationOptions): Promise<Generati
     const elapsed = Date.now() - startTime;
     const remainingTime = totalDeadlineMs - elapsed;
 
-    if (remainingTime < 3000) {
+    if (remainingTime < 4000 || (modelIdx >= candidates.length && lastError)) {
+      if (lastError) {
+        throw new Error(formatFriendlyErrorMessage(lastError));
+      }
       throw new Error(
         'Waktu proses melebihi batas aman yang diizinkan (timeout). Silakan coba lagi atau gunakan materi per bab.'
       );
@@ -300,8 +303,8 @@ export async function generateText(options: GenerationOptions): Promise<Generati
     const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
     const fallbackModel = modelIdx + 1 < candidates.length ? candidates[modelIdx + 1] : undefined;
     const effectiveTimeout = fallbackModel
-      ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 9500)
-      : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
+      ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 15000)
+      : Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 18000);
 
     try {
       const result = await invokeWithHedgedFallback({
@@ -396,15 +399,18 @@ export async function generateJson<T = any>(
       const elapsed = Date.now() - startTime;
       const remainingTime = totalDeadlineMs - elapsed;
 
-      if (remainingTime < 3000) {
+      if (remainingTime < 4000 || (modelIdx >= candidates.length && lastError)) {
+        if (lastError) {
+          throw new Error(formatFriendlyErrorMessage(lastError));
+        }
         throw new Error('Waktu proses melebihi batas aman yang diizinkan (timeout).');
       }
 
       const activeModel = candidates[Math.min(modelIdx, candidates.length - 1)];
       const fallbackModel = modelIdx + 1 < candidates.length ? candidates[modelIdx + 1] : undefined;
       const effectiveTimeout = fallbackModel
-        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 9500)
-        : calculateEffectiveTimeout(attemptTimeoutMs, remainingTime);
+        ? Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 15000)
+        : Math.min(calculateEffectiveTimeout(attemptTimeoutMs, remainingTime), 18000);
 
       try {
         const result = await invokeWithHedgedFallback({
