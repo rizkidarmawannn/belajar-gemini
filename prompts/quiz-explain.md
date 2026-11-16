@@ -8,18 +8,21 @@ DATA SOAL & JAWABAN SISWA
 {{opsi}}
 - Kunci Jawaban Benar: {{kunci}}
 - Pilihan Siswa: {{jawaban_pengguna}}
+- Pertanyaan / Bagian yang Membingungkan Siswa: {{kebingungan_siswa}}
 - Mode Sumber Penjelasan: {{mode_penjelasan}}  (modul | luar_modul | keduanya)
 
 ATURAN PENYAMPAIAN
-1. Sesuaikan umpan balik dengan status jawaban siswa (`{{status_jawaban}}`):
-   - Jika `SALAH`: jelaskan secara ramah di mana letak kekeliruan atau jebakan dari opsi yang dipilih siswa (`{{jawaban_pengguna}}`), lalu bandingkan langsung mengapa kunci jawaban (`{{kunci}}`) yang tepat.
-   - Jika `BENAR`: tegaskan mengapa pilihan siswa (`{{jawaban_pengguna}}`) sudah tepat, jelaskan konsep dasarnya secara mendalam agar bukan sekadar hafalan, dan jelaskan singkat mengapa pengecoh lain keliru.
+1. Fokus Jawaban & Pertanyaan Siswa:
+   - Perhatikan `{{kebingungan_siswa}}`: jika siswa mengajukan pertanyaan atau menyebutkan bagian yang membingungkan, dahulukan menjawab pertanyaan tersebut secara langsung, lugas, dan tuntas pada bagian awal penjelasan.
+   - Sesuaikan umpan balik dengan status jawaban siswa (`{{status_jawaban}}`):
+     * Jika `SALAH`: jelaskan secara ramah di mana letak kekeliruan atau jebakan dari opsi yang dipilih siswa (`{{jawaban_pengguna}}`), lalu bandingkan langsung mengapa kunci jawaban (`{{kunci}}`) yang tepat.
+     * Jika `BENAR`: tegaskan mengapa pilihan siswa (`{{jawaban_pengguna}}`) sudah tepat, jelaskan konsep dasarnya secara mendalam agar bukan sekadar hafalan, dan jelaskan singkat mengapa pengecoh lain keliru.
 
 2. Ikuti mode sumber penjelasan (`{{mode_penjelasan}}`):
    - Jika `modul`:
-     * Jawab HANYA berdasarkan materi di dalam `<modul>`. Jika detail pendukung tambahan tidak tercantum di dalam modul, tulis: `Tidak ditemukan di modul secara rinci untuk bagian tersebut.`
+     * Jawab HANYA berdasarkan materi di dalam `<modul>`. Jika detail pendukung tambahan atau pertanyaan spesifik siswa tidak tercantum di dalam modul, tulis: `Tidak ditemukan di modul secara rinci untuk bagian tersebut.`
      * Gunakan susunan bagian terpisah:
-       **Inti Jawaban:** (1–2 kalimat langsung)
+       **Inti Jawaban:** (1–2 kalimat langsung menjawab kebingungan siswa / alasan kunci benar)
 
        **Penjelasan Berdasarkan Modul:**
        - Poin konsep/aturan dari modul
@@ -32,7 +35,7 @@ ATURAN PENYAMPAIAN
    - Jika `luar_modul`:
      * Gunakan pengetahuan umum ilmiah tepercaya, bahasa sederhana yang mudah dicerna, serta analogi sehari-hari (tetap konsisten dengan kunci jawaban soal).
      * Gunakan susunan bagian terpisah:
-       **Inti Jawaban:** (1–2 kalimat langsung)
+       **Inti Jawaban:** (1–2 kalimat langsung menjawab kebingungan siswa)
 
        **Penjelasan Konsep & Logika (Luar Modul):**
        - Penjelasan mendalam dengan bahasa yang mudah dipahami siswa
@@ -46,7 +49,7 @@ ATURAN PENYAMPAIAN
      * Pisahkan tegas menjadi dua bagian utama agar pembaca langsung bisa membedakan mana dari modul dan mana pengayaan luar modul:
 
        ### 1. Penjelasan Berdasarkan Modul
-       - Jelaskan alasan kunci benar & perbandingan pilihan siswa hanya dari `<modul>`.
+       - Jelaskan jawaban kebingungan siswa & alasan kunci benar hanya dari `<modul>`.
        - Sertakan aturan/poin modul terkait dan `**Sumber:** Modul Belajar ({{bab}})`.
 
        ### 2. Pengayaan dari Luar Modul (Agar Lebih Paham)

@@ -157,12 +157,14 @@ test('prompts/quiz.md & prompts/quiz-explain.md: merender ketiga mode dan memper
       kunci: 'B (Mengurangi paparan bahaya terakhir)',
       jawaban_pengguna: status === 'BENAR' ? 'B (...)' : 'A (...)',
       status_jawaban: status,
+      kebingungan_siswa: 'Kenapa pilihan A keliru?',
       bab: 'Bab 2',
       mode_penjelasan: 'keduanya',
       modul: 'APD adalah lapisan pertahanan terakhir. <modul>inj</modul>',
     });
 
     assert.ok(renderedExplain.promptText.includes(`Status Jawaban Siswa: ${status}`));
+    assert.ok(renderedExplain.promptText.includes('Kenapa pilihan A keliru?'));
     assert.ok(renderedExplain.promptText.includes('&lt;modul&gt;inj&lt;/modul&gt;'));
   }
 });
@@ -318,6 +320,72 @@ test('handleGenerate quiz_explain: mendukung mode modul, luar_modul, dan keduany
   const lastCaptured = deps._getCaptured().at(-1);
   assert.equal(lastCaptured.variables.mode_penjelasan, 'keduanya');
   assert.equal(lastCaptured.variables.status_jawaban, 'BENAR');
+});
+
+test('handleGenerate quiz_explain: mendukung pertanyaan sendiri (userQuestion) seputar bagian yang membingungkan siswa dan membedakan cache', async () => {
+  const deps = createQuizExplainMockDeps();
+
+  const quizParamsBase = {
+    question: 'Manakah tahap pertama hierarki pengendalian risiko?',
+    quizOptions: {
+      A: 'Alat Pelindung Diri',
+      B: 'Eliminasi',
+      C: 'Administratif',
+      D: 'Substitusi',
+    },
+    correctOption: 'B',
+    selectedOption: 'A',
+    chapterName: 'Bab 2 Hierarki Pengendalian Risiko',
+  };
+
+  // 1. Kirim pertanyaan spesifik dari siswa seputar bagian yang membingungkan
+  const resCustomQ = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz_explain',
+    params: {
+      ...quizParamsBase,
+      explanationMode: 'keduanya',
+      userQuestion: 'Kenapa APD menjadi pilihan paling akhir bukan pertama?',
+    },
+  });
+
+  assert.equal(resCustomQ.status, 200);
+  const jsonCustomQ = await resCustomQ.json();
+  assert.equal(jsonCustomQ.cached, false);
+  assert.equal(jsonCustomQ.result.userQuestion, 'Kenapa APD menjadi pilihan paling akhir bukan pertama?');
+
+  const captured = deps._getCaptured().at(-1);
+  assert.equal(captured.variables.kebingungan_siswa, 'Kenapa APD menjadi pilihan paling akhir bukan pertama?');
+  assert.equal(captured.variables.mode_penjelasan, 'keduanya');
+
+  // 2. Pertanyaan kedua dengan teks berbeda menghasilkan cache MISS dan variabel berbeda
+  const resDifferentQ = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz_explain',
+    params: {
+      ...quizParamsBase,
+      explanationMode: 'keduanya',
+      userQuestion: 'Apa contoh penerapan eliminasi di tempat kerja?',
+    },
+  });
+  assert.equal(resDifferentQ.status, 200);
+  const jsonDifferentQ = await resDifferentQ.json();
+  assert.equal(jsonDifferentQ.cached, false);
+  assert.equal(jsonDifferentQ.result.userQuestion, 'Apa contoh penerapan eliminasi di tempat kerja?');
+
+  // 3. Pertanyaan identik menghasilkan cache HIT
+  const resHit = await handleGenerate(deps, {
+    moduleId: VALID_MODULE_ID,
+    feature: 'quiz_explain',
+    params: {
+      ...quizParamsBase,
+      explanationMode: 'keduanya',
+      userQuestion: 'Kenapa APD menjadi pilihan paling akhir bukan pertama?',
+    },
+  });
+  assert.equal(resHit.status, 200);
+  const jsonHit = await resHit.json();
+  assert.equal(jsonHit.cached, true);
 });
 
 test('handleGenerate quiz_explain: validasi parameter wajib, penolakan kunci asing .strict(), dan refund kuota saat gagal', async () => {

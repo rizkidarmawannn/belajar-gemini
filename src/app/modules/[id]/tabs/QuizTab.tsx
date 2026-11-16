@@ -351,8 +351,13 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
     ]);
   };
 
-  const handleRequestDeepExplain = async (item: QuizExplanationData, mode: ExplanationMode) => {
-    const cacheKey = buildDeepExplainKey(item.pertanyaan, item.userAnswer, mode);
+  const handleRequestDeepExplain = async (
+    item: QuizExplanationData,
+    mode: ExplanationMode,
+    userQuestion?: string
+  ) => {
+    const trimmedUserQuestion = (userQuestion || '').trim();
+    const cacheKey = buildDeepExplainKey(item.pertanyaan, item.userAnswer, mode, trimmedUserQuestion);
     const prevEntry = deepExplanations[cacheKey];
     if (prevEntry && !prevEntry.isTruncated) return;
 
@@ -410,6 +415,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
               | 'D',
             chapterName: (item.bab || 'Umum').slice(0, 95),
             explanationMode: mode,
+            ...(trimmedUserQuestion ? { userQuestion: trimmedUserQuestion.slice(0, 990) } : {}),
           },
         }),
       });
@@ -443,6 +449,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
         [cacheKey]: {
           markdown,
           mode,
+          userQuestion: trimmedUserQuestion || undefined,
           isTruncated,
           usedChapters:
             streamResult.usedChapters || streamResult.rawJson?.result?.usedChapters,

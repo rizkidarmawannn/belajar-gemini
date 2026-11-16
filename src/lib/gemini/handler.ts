@@ -217,7 +217,7 @@ function buildQuizExplainPayload(
   isCorrect: boolean;
   variables: Record<string, any>;
 } {
-  const { question, quizOptions, correctOption, selectedOption, chapterName, explanationMode } = params;
+  const { question, quizOptions, correctOption, selectedOption, chapterName, explanationMode, userQuestion } = params;
   const expMode = explanationMode || 'keduanya';
   if (!question || !question.trim() || !quizOptions || !correctOption || !selectedOption) {
     return { isValid: false, expMode, isCorrect: false, variables: {} };
@@ -226,6 +226,8 @@ function buildQuizExplainPayload(
   const opsiText = (['A', 'B', 'C', 'D'] as const)
     .map((key) => `- **${key}.** ${quizOptions[key]}`)
     .join('\n');
+
+  const customQuestion = (userQuestion || '').trim();
 
   return {
     isValid: true,
@@ -237,6 +239,8 @@ function buildQuizExplainPayload(
       kunci: `${correctOption} (${quizOptions[correctOption]})`,
       jawaban_pengguna: `${selectedOption} (${quizOptions[selectedOption]})`,
       status_jawaban: selectedOption === correctOption ? 'BENAR' : 'SALAH',
+      kebingungan_siswa:
+        customQuestion || 'Tidak ada pertanyaan khusus (jelaskan konsep soal dan perbandingan jawaban)',
       bab: chapterName || 'Umum',
       mode_penjelasan: expMode,
       modul: moduleContent,
@@ -270,6 +274,7 @@ export const StrictParamsSchema = z
       .optional(),
     correctOption: z.enum(['A', 'B', 'C', 'D']).optional(),
     selectedOption: z.enum(['A', 'B', 'C', 'D']).optional(),
+    userQuestion: z.string().max(1000, 'Pertanyaan pengguna maksimal 1000 karakter').optional(),
     batchIndex: z.number().int().min(0).max(30).optional(),
     batchTotal: z.number().int().min(1).max(25).optional(),
     batchToken: z.string().max(240).optional(),
@@ -549,6 +554,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
       const searchQuery = [
         body.params.chapterName && body.params.chapterName !== 'semua' ? body.params.chapterName : '',
         body.params.question || '',
+        body.params.userQuestion || '',
         ...(body.params.quizOptions ? Object.values(body.params.quizOptions) : []),
       ]
         .filter(Boolean)
@@ -641,7 +647,11 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
 
   // 7. Mode Streaming untuk QA, Ringkasan, Mnemonic, dan Penjelasan Lanjutan Kuis
   if (body.stream && STREAMABLE_FEATURES.has(body.feature)) {
-    let streamQuizExplainMeta: { expMode: 'modul' | 'luar_modul' | 'keduanya'; isCorrect: boolean } | null = null;
+    let streamQuizExplainMeta: {
+      expMode: 'modul' | 'luar_modul' | 'keduanya';
+      isCorrect: boolean;
+      userQuestion?: string;
+    } | null = null;
     let streamVariables: Record<string, any>;
 
     if (body.feature === 'qa') {
@@ -666,7 +676,11 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
         );
       }
       streamVariables = built.variables;
-      streamQuizExplainMeta = { expMode: built.expMode, isCorrect: built.isCorrect };
+      streamQuizExplainMeta = {
+        expMode: built.expMode,
+        isCorrect: built.isCorrect,
+        ...(body.params.userQuestion ? { userQuestion: body.params.userQuestion } : {}),
+      };
     } else {
       streamVariables = {
         gaya: body.params.style,
@@ -708,6 +722,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
                     markdown: fullText,
                     mode: streamQuizExplainMeta.expMode,
                     isCorrect: streamQuizExplainMeta.isCorrect,
+                    ...(streamQuizExplainMeta.userQuestion ? { userQuestion: streamQuizExplainMeta.userQuestion } : {}),
                     ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
                   }
                 : { markdown: fullText, ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}) };
@@ -1063,6 +1078,7 @@ export async function handleGenerate(deps: GenerateDependencies, rawBody: any) {
           markdown: gen.data,
           mode: built.expMode,
           isCorrect: built.isCorrect,
+          ...(body.params.userQuestion ? { userQuestion: body.params.userQuestion } : {}),
           ...(usedChaptersPayload ? { usedChapters: usedChaptersPayload } : {}),
         };
         tokensIn = gen.tokensIn;
@@ -1307,6 +1323,6 @@ export function createProductionDeps(): GenerateDependencies {
     },
     dailyQuotaLimit: getDailyQuotaLimit(),
     getUserQuotaLimit: (user: any) => getUserDailyQuotaLimit(user),
-    promptVersion: process.env.PROMPT_VERSION || '7',
+    promptVersion: process.env.PROMPT_VERSION || '8',
   };
 }
