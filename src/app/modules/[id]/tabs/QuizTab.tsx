@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   CheckCircle2,
   XCircle,
@@ -13,6 +13,7 @@ import {
   BookOpen,
   Globe,
   Layers,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   formatFriendlyErrorMessage,
@@ -56,6 +57,9 @@ interface QuizTabProps {
   moduleId: string;
   initialAttempts: QuizAttempt[];
   onError: (msg: string, retry?: () => void) => void;
+  isOpenedModuleDuringQuiz?: boolean;
+  onResetOpenedModuleDuringQuiz?: () => void;
+  onQuizActiveChange?: (isActive: boolean) => void;
 }
 
 const SETUP_EXPLANATION_OPTIONS: Array<{
@@ -80,7 +84,14 @@ const SETUP_EXPLANATION_OPTIONS: Array<{
   },
 ];
 
-export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabProps) {
+export default function QuizTab({
+  moduleId,
+  initialAttempts,
+  onError,
+  isOpenedModuleDuringQuiz = false,
+  onResetOpenedModuleDuringQuiz,
+  onQuizActiveChange,
+}: QuizTabProps) {
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -94,6 +105,12 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
   const [quizExplanationMode, setQuizExplanationMode] = useState<ExplanationMode>('keduanya');
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>(initialAttempts);
   const [quizProgress, setQuizProgress] = useState<{ done: number; total: number } | null>(null);
+
+  const isQuizActive = quizQuestions.length > 0 && !isQuizFinished;
+
+  useEffect(() => {
+    onQuizActiveChange?.(isQuizActive);
+  }, [isQuizActive, onQuizActiveChange]);
 
   // Cache lokal & status loading untuk pendalaman penjelasan soal ("Minta Penjelasan Lagi")
   const [deepExplanations, setDeepExplanations] = useState<Record<string, DeepExplainEntry>>({});
@@ -158,6 +175,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
   };
 
   const handleGenerateQuiz = async () => {
+    onResetOpenedModuleDuringQuiz?.();
     setIsGeneratingQuiz(true);
     setQuizProgress(quizCount > 5 ? { done: 0, total: quizCount } : null);
     onError('');
@@ -499,6 +517,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
             score: quizScore,
             total: quizQuestions.length,
             answers: sanitizedAnswers,
+            openedModuleDuringQuiz: Boolean(isOpenedModuleDuringQuiz),
           }),
         });
 
@@ -515,6 +534,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
   };
 
   const handleRetryWrongQuestions = () => {
+    onResetOpenedModuleDuringQuiz?.();
     const wrongQs = quizQuestions.filter((q, idx) => {
       const qNum = q.nomor || idx + 1;
       const recorded = quizAnswers.find((a) => a.nomor === qNum);
@@ -710,6 +730,16 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
             />
           </div>
 
+          {/* Status jika pengguna sempat membuka modul saat kuis berlangsung */}
+          {isOpenedModuleDuringQuiz && (
+            <div className="p-3 rounded-2xl bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-900 dark:text-amber-200 flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+              <span>
+                <strong>Catatan Terbuka:</strong> Anda tercatat membuka modul selama sesi kuis ini berlangsung (Open Book).
+              </span>
+            </div>
+          )}
+
           <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
@@ -863,6 +893,35 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
             </span>
           </div>
 
+          {/* Status Catatan Integritas Pengerjaan Kuis */}
+          <div className="max-w-md mx-auto">
+            {isOpenedModuleDuringQuiz ? (
+              <div className="p-3.5 rounded-2xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-left flex items-start gap-3 shadow-xs">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="text-xs font-bold text-amber-900 dark:text-amber-200 block">
+                    Catatan: Melihat Modul Saat Mengerjakan (Open Book)
+                  </span>
+                  <p className="text-[11px] text-amber-800 dark:text-amber-300 mt-0.5 leading-relaxed">
+                    Kuis ini diselesaikan dengan membuka modul di tengah pengerjaan. Catatan ini tercantum di riwayat agar transparan bahwa jawaban tidak murni dari ingatan sendiri.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="p-3.5 rounded-2xl bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-left flex items-start gap-3 shadow-xs">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="text-xs font-bold text-emerald-900 dark:text-emerald-200 block">
+                    Pengerjaan Mandiri: Murni Pikir Sendiri
+                  </span>
+                  <p className="text-[11px] text-emerald-800 dark:text-emerald-300 mt-0.5 leading-relaxed">
+                    Hebat! Seluruh soal kuis diselesaikan secara mandiri tanpa membuka materi modul di tengah pengerjaan.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
             {quizScore < quizQuestions.length && (
               <button
@@ -876,6 +935,7 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
 
             <button
               onClick={() => {
+                onResetOpenedModuleDuringQuiz?.();
                 setQuizQuestions([]);
                 setIsQuizFinished(false);
               }}
@@ -940,24 +1000,40 @@ export default function QuizTab({ moduleId, initialAttempts, onError }: QuizTabP
             <span>Riwayat Latihan Kuis Modul Ini</span>
           </h3>
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
-            {quizAttempts.map((att) => (
-              <div key={att.id} className="py-2.5 flex items-center justify-between text-xs">
-                <div>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">
-                    Skor: {att.score} / 100
+            {quizAttempts.map((att) => {
+              const wasOpened =
+                Boolean((att as any).opened_module) ||
+                (Array.isArray(att.answers) && att.answers.some((a: any) => a.openedModuleDuringQuiz)) ||
+                Boolean(att.answers?.openedModuleDuringQuiz);
+
+              return (
+                <div key={att.id} className="py-2.5 flex items-center justify-between text-xs">
+                  <div className="flex items-center flex-wrap gap-2">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">
+                      Skor: {att.score} / 100
+                    </span>
+                    <span className="text-slate-400">({att.total} Soal)</span>
+                    {wasOpened ? (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 font-medium">
+                        Melihat Modul
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-medium">
+                        Murni Mandiri
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-slate-400">
+                    {new Date(att.created_at).toLocaleDateString('id-ID', {
+                      day: 'numeric',
+                      month: 'short',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </span>
-                  <span className="text-slate-400 ml-2">({att.total} Soal)</span>
                 </div>
-                <span className="text-slate-400">
-                  {new Date(att.created_at).toLocaleDateString('id-ID', {
-                    day: 'numeric',
-                    month: 'short',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

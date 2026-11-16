@@ -14,6 +14,7 @@ export const AnswerItemSchema = z
     kunci: z.string().trim().min(1).max(10, 'Kunci jawaban maksimal 10 karakter'),
     isCorrect: z.boolean(),
     penjelasan: z.string().trim().max(1000, 'Penjelasan maksimal 1000 karakter').optional(),
+    openedModuleDuringQuiz: z.boolean().optional(),
   })
   .strict();
 
@@ -22,6 +23,7 @@ export const SaveAttemptSchema = z
     score: z.number().int().min(0),
     total: z.number().int().min(1).max(100, 'Total soal maksimal 100'),
     answers: z.array(AnswerItemSchema).min(1).max(100, 'Maksimal 100 butir jawaban'),
+    openedModuleDuringQuiz: z.boolean().optional(),
   })
   .strict()
   .refine((data) => data.score <= data.total, {
@@ -89,12 +91,17 @@ export async function handleSaveQuizAttempt(deps: QuizDependencies, moduleId: st
     );
   }
 
+  const isOpened = Boolean(parsed.data.openedModuleDuringQuiz);
+  const answersToSave = isOpened
+    ? parsed.data.answers.map((a) => ({ ...a, openedModuleDuringQuiz: true }))
+    : parsed.data.answers;
+
   const { data: inserted, error: insErr } = await deps.insertAttempt({
     user_id: user.id,
     module_id: moduleId,
     score: parsed.data.score,
     total: parsed.data.total,
-    answers: parsed.data.answers,
+    answers: answersToSave,
   });
 
   if (insErr) {

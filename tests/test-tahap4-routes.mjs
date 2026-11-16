@@ -406,6 +406,40 @@ test('Quiz Attempts POST: Percobaan kuis yang valid berhasil disimpan', async ()
   assert.equal(savedData.user_id, MOCK_USER_A.id);
 });
 
+test('Quiz Attempts POST: openedModuleDuringQuiz disimpan dan ditandai pada answers', async () => {
+  let savedData = null;
+  const deps = {
+    getAuthUser: async () => ({ user: MOCK_USER_A, error: null }),
+    getModule: async () => ({ data: { id: MOCK_MODULE_ID }, error: null }),
+    getAttempts: async () => ({ data: [], error: null }),
+    insertAttempt: async (row) => {
+      savedData = { id: 'attempt-uuid-open-book', ...row };
+      return { data: savedData, error: null };
+    },
+  };
+
+  const openBookAttempt = {
+    score: 5,
+    total: 5,
+    openedModuleDuringQuiz: true,
+    answers: [
+      {
+        nomor: 1,
+        pertanyaan: 'Apa dasar hukum penerapan SMK3 di Indonesia?',
+        userAnswer: 'A',
+        kunci: 'A',
+        isCorrect: true,
+        penjelasan: 'PP No. 50 Tahun 2012.',
+      },
+    ],
+  };
+
+  const res = await handleSaveQuizAttempt(deps, MOCK_MODULE_ID, openBookAttempt);
+  assert.equal(res.status, 200);
+  assert.ok(savedData);
+  assert.equal(savedData.answers[0].openedModuleDuringQuiz, true);
+});
+
 // ==========================================
 // 3. PENGUJIAN BATAS UKURAN PAYLOAD (413)
 // ==========================================
